@@ -7,7 +7,7 @@ from app.agent import agent_decision
 
 app = FastAPI(title="Agentic Honeypot API")
 
-API_KEY = "Demo_1234"
+API_KEY = "Honeypot2026@Krushna"
 
 
 # -----------------------------
