@@ -1,4 +1,7 @@
+import os
 import time
+from typing import Dict, Any
+
 from fastapi import FastAPI, Header, HTTPException
 from app.schemas import IncomingMessage
 from app.detector import detect_scam
@@ -7,7 +10,15 @@ from app.agent import agent_decision
 
 app = FastAPI(title="Agentic Honeypot API")
 
-API_KEY = "Honeypot2026@Krushna"
+# ✅ API KEY: ENV first, fallback local
+# Render env var name: HONEYPOT_API_KEY
+API_KEY = os.getenv("HONEYPOT_API_KEY", "Honeypot2026@Krushna")
+
+# -----------------------------
+# Simple in-memory session store
+# (Works great for hackathon eval)
+# -----------------------------
+SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 
 
 # -----------------------------
@@ -29,7 +40,9 @@ def aggregate_from_history(history):
         "ifscCodes": [],
         "phishingLinks": [],
         "phoneNumbers": [],
-        "emailIds": []
+        "emailIds": [],
+        "hasQRIntent": False,
+        "hasPaymentIntent": False
     }
 
     for msg in history or []:
@@ -42,12 +55,20 @@ def aggregate_from_history(history):
         agg["phoneNumbers"] = merge_unique(agg["phoneNumbers"], f.get("phoneNumbers"))
         agg["emailIds"] = merge_unique(agg["emailIds"], f.get("emailIds"))
 
+        agg["hasQRIntent"] = agg["hasQRIntent"] or bool(f.get("hasQRIntent", False))
+        agg["hasPaymentIntent"] = agg["hasPaymentIntent"] or bool(f.get("hasPaymentIntent", False))
+
     return agg
 
 
 @app.get("/")
 def root():
     return {"status": "Agentic Honeypot API is running"}
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
 @app.post("/honeypot")
@@ -61,7 +82,23 @@ def receive_message(
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    start_time = time.time()
+    # -----------------------------
+    # Session timing (cumulative)
+    # -----------------------------
+    session_id = data.sessionId
+    now = time.time()
+
+    if session_id not in SESSION_STORE:
+        SESSION_STORE[session_id] = {
+            "startedAt": now,
+            "lastSeenAt": now,
+            "turns": 0
+        }
+    else:
+        SESSION_STORE[session_id]["lastSeenAt"] = now
+
+    # We count a "turn" per incoming message event
+    SESSION_STORE[session_id]["turns"] += 1
 
     # -----------------------------
     # 1) Scam Detection
@@ -85,8 +122,8 @@ def receive_message(
         "phishingLinks": merge_unique(extracted_history["phishingLinks"], extracted_now.get("phishingLinks")),
         "phoneNumbers": merge_unique(extracted_history["phoneNumbers"], extracted_now.get("phoneNumbers")),
         "emailIds": merge_unique(extracted_history["emailIds"], extracted_now.get("emailIds")),
-        "hasQRIntent": extracted_now.get("hasQRIntent", False),
-        "hasPaymentIntent": extracted_now.get("hasPaymentIntent", False)
+        "hasQRIntent": bool(extracted_history.get("hasQRIntent")) or bool(extracted_now.get("hasQRIntent", False)),
+        "hasPaymentIntent": bool(extracted_history.get("hasPaymentIntent")) or bool(extracted_now.get("hasPaymentIntent", False))
     }
 
     # -----------------------------
@@ -99,7 +136,16 @@ def receive_message(
         extracted_intelligence=final_intel
     )
 
-    end_time = time.time()
+    # -----------------------------
+    # Engagement metrics
+    # -----------------------------
+    duration_sec = int(now - SESSION_STORE[session_id]["startedAt"])
+
+    # Prefer event turns (store) over just history length (history may be limited)
+    conversation_turns = max(
+        SESSION_STORE[session_id]["turns"],
+        len(data.conversationHistory) + 1
+    )
 
     # -----------------------------
     # Judge-ready structured output
@@ -126,8 +172,8 @@ def receive_message(
         "agentGoal": agent_result.get("agentGoal"),
 
         "engagementMetrics": {
-            "conversationTurns": len(data.conversationHistory) + 1,
-            "engagementDurationSeconds": int(end_time - start_time)
+            "conversationTurns": conversation_turns,
+            "engagementDurationSeconds": duration_sec
         },
 
         # ✅ cumulative intelligence (history + current)

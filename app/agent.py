@@ -1,7 +1,6 @@
 import random
 from typing import Dict, Any, Optional, List
 
-
 # -----------------------------
 # Persona (believable human)
 # -----------------------------
@@ -26,11 +25,18 @@ def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     extracted = extracted or {}
     upi = extracted.get("upiIds") or []
     banks = extracted.get("bankAccounts") or []
+    ifsc = extracted.get("ifscCodes") or []
     links = extracted.get("phishingLinks") or extracted.get("links") or []
+    phones = extracted.get("phoneNumbers") or []
+    emails = extracted.get("emailIds") or []
+
     return {
         "need_upi": len(upi) == 0,
         "need_bank": len(banks) == 0,
-        "need_link": len(links) == 0
+        "need_ifsc": len(ifsc) == 0,
+        "need_link": len(links) == 0,
+        "need_phone": len(phones) == 0,
+        "need_email": len(emails) == 0,
     }
 
 
@@ -40,11 +46,13 @@ def generate_reply(
     scam_type: Optional[str] = None,
     extracted: Optional[Dict[str, Any]] = None
 ) -> Dict[str, str]:
-
     stage = (stage or "UNKNOWN").upper()
     scam_type = (scam_type or "UNKNOWN").upper()
+    extracted = extracted or {}
 
     gaps = _intel_gaps(extracted)
+    has_payment_intent = bool(extracted.get("hasPaymentIntent", False))
+    has_qr_intent = bool(extracted.get("hasQRIntent", False))
 
     soft_openers = [
         "I’m a bit confused. Can you explain what I need to do?",
@@ -70,13 +78,24 @@ def generate_reply(
         "Can you share beneficiary bank details so I can complete verification?"
     ]
 
-    # ⭐ Realistic honeypot replies (best for your last case)
+    ask_ifsc_only = [
+        "IFSC code bhi bhej do please. App IFSC maang raha hai.",
+        "Receiver bank ka IFSC kya hai? Without IFSC it’s not allowing."
+    ]
+
     ask_receiver_or_collect = [
         "Receiver name kya aayega? (UPI pe jo name show hota hai) I want to confirm.",
         "Can you send a collect request? I’m not able to type the UPI ID correctly.",
         "If this UPI fails, do you have another UPI ID I can try?"
     ]
 
+    # Optional extra intel ask (useful in real evals)
+    ask_contact_details = [
+        "Aapka support number kya hai? Call karke confirm karna hai.",
+        "Official email ID bhej do, I’ll forward screenshot there."
+    ]
+
+    # Stage-based base prompts
     stage_prompts = {
         "RECON": [
             "Hi, yes—what is this about?",
@@ -97,6 +116,10 @@ def generate_reply(
         "PHISHING": [
             "I clicked but it looks different.",
             "The site is asking too many things."
+        ],
+        "OTP_FRAUD": [
+            "OTP? But why OTP is needed for this?",
+            "I got OTP, but I’m scared to share. What is it for?"
         ],
         "REWARD_LURE": [
             "Really? What do I need to do to claim it?",
@@ -121,48 +144,38 @@ def generate_reply(
     # ------------------ INTEL MODE ------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # 1. Need link
-        if gaps["need_link"]:
-            return {
-                "agentReply": _pick(ask_link),
-                "agentGoal": "Extract phishing URL for reporting."
-            }
+        # Priority 1: PHISHING links (high value)
+        if gaps["need_link"] and stage in ["PHISHING", "SOCIAL_ENGINEERING", "URGENCY"]:
+            return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
 
-        # 2. Need UPI
-        if gaps["need_upi"]:
-            return {
-                "agentReply": _pick(ask_upi),
-                "agentGoal": "Extract UPI ID / receiver handle."
-            }
+        # Priority 2: Payment/UPI details
+        if gaps["need_upi"] and (has_payment_intent or stage in ["PAYMENT_REQUEST", "URGENCY", "SOCIAL_ENGINEERING"]):
+            return {"agentReply": _pick(ask_upi), "agentGoal": "Extract UPI ID / receiver handle."}
 
-        # 3. Link + UPI already present → REALISTIC FOLLOW-UP
-        if (not gaps["need_link"]) and (not gaps["need_upi"]) and gaps["need_bank"]:
-            return {
-                "agentReply": _pick(ask_receiver_or_collect),
-                "agentGoal": "Extend conversation to extract receiver name / collect request."
-            }
+        # If QR intent -> ask for QR / collect request
+        if has_qr_intent and (not gaps["need_upi"]):
+            return {"agentReply": _pick(ask_receiver_or_collect), "agentGoal": "Extend conversation using QR/collect flow."}
 
-        # 4. Finally bank details
+        # Priority 3: Bank details (A/C + IFSC)
         if gaps["need_bank"]:
-            return {
-                "agentReply": _pick(ask_bank),
-                "agentGoal": "Extract bank account details."
-            }
+            return {"agentReply": _pick(ask_bank), "agentGoal": "Extract bank account details."}
+
+        # If bank exists but IFSC missing
+        if (not gaps["need_bank"]) and gaps["need_ifsc"]:
+            return {"agentReply": _pick(ask_ifsc_only), "agentGoal": "Extract IFSC to complete bank intelligence."}
+
+        # Bonus: contact details (optional intel)
+        if gaps["need_phone"] or gaps["need_email"]:
+            return {"agentReply": _pick(ask_contact_details), "agentGoal": "Extract official contact details for intelligence."}
 
         followups = [
             "Okay, I noted that. What’s the next step?",
             "Done. If it fails again, what should I do?",
             "Can you confirm receiver name once more?"
         ]
-        return {
-            "agentReply": _pick(followups),
-            "agentGoal": "Keep conversation alive for more evidence."
-        }
+        return {"agentReply": _pick(followups), "agentGoal": "Keep conversation alive for more evidence."}
 
-    return {
-        "agentReply": None,
-        "agentGoal": "No action needed."
-    }
+    return {"agentReply": None, "agentGoal": "No action needed."}
 
 
 def agent_decision(
@@ -186,6 +199,7 @@ def agent_decision(
     scam_type = analysis.get("scamType")
     stage = analysis.get("scamStage")
 
+    # HIGH: intelligence extraction
     if score >= 0.8:
         reply_pack = generate_reply(
             mode="INTELLIGENCE_EXTRACTION",
@@ -204,6 +218,7 @@ def agent_decision(
             "persona": PERSONA["style"]
         }
 
+    # MEDIUM: soft engagement
     if score >= 0.5:
         reply_pack = generate_reply(
             mode="SOFT_ENGAGEMENT",

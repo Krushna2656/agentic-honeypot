@@ -8,7 +8,7 @@ class Message(BaseModel):
     text: str = Field(..., example="Verify your account immediately")
     timestamp: datetime = Field(..., example="2026-01-29T18:00:00")
 
-    # Optional (professional + future safe)
+    # Optional
     messageId: Optional[str] = Field(default=None, example="msg_001")
     source: Optional[str] = Field(default=None, example="mock_scammer_api")
 

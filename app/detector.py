@@ -4,7 +4,6 @@ from typing import List, Dict, Any, Optional
 # -----------------------------
 # Keyword & Pattern Definitions
 # -----------------------------
-
 SCAM_KEYWORDS = {
     "RECON": ["hello", "hi", "are you there"],
     "SOCIAL_ENGINEERING": [
@@ -26,9 +25,6 @@ URL_REGEX = r"https?://[^\s]+"
 BANK_REGEX = r"\b\d{9,18}\b"
 IFSC_REGEX = r"\b[A-Z]{4}0[A-Z0-9]{6}\b"
 
-# -----------------------------
-# Helper Functions
-# -----------------------------
 
 def _contains_any(text: str, words: List[str]) -> bool:
     return any(w in text for w in words)
@@ -42,18 +38,11 @@ def detect_stage(
     has_otp: bool = False
 ) -> str:
     """
-    Smarter stage detection:
-    - PHISHING if URL is present
-    - PAYMENT_REQUEST only if UPI ID is present OR actual payment intent exists
-    - OTP_FRAUD if OTP keywords present
-    - URGENCY if urgency words exist
-    - SOCIAL_ENGINEERING for verification/account manipulation
-    - REWARD_LURE for lottery/prize
-    - RECON for greetings
+    Smarter stage detection (priority based):
+    PHISHING > OTP_FRAUD > PAYMENT_REQUEST > URGENCY > SOCIAL_ENGINEERING > REWARD_LURE > RECON
     """
     text = text.lower()
 
-    # Strong signal stages first
     if has_url:
         return "PHISHING"
 
@@ -62,7 +51,7 @@ def detect_stage(
 
     payment_intent = (
         has_upi_id
-        or _contains_any(text, ["send money", "pay", "transfer", "processing fee", "charge", "qr", "scan", "collect request", "request money"])
+        or _contains_any(text, SCAM_KEYWORDS["PAYMENT_REQUEST"])
     )
     if payment_intent:
         return "PAYMENT_REQUEST"
@@ -83,9 +72,6 @@ def detect_stage(
 
 
 def history_boost(history: Optional[List[Any]]) -> float:
-    """
-    Boost based on scam signals appearing repeatedly in conversation history.
-    """
     if not history:
         return 0.0
 
@@ -99,22 +85,17 @@ def history_boost(history: Optional[List[Any]]) -> float:
         ):
             repeat_hits += 1
 
-    # stronger, but capped
     return min(0.08 * repeat_hits, 0.32)
 
 
-# -----------------------------
-# Main Detection Function
-# -----------------------------
-
 def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
-    text = message_text.lower()
+    text = (message_text or "").lower()
 
     # Pattern extraction
-    upi_ids = re.findall(UPI_REGEX, message_text)
-    urls = re.findall(URL_REGEX, message_text)
-    bank_accounts = re.findall(BANK_REGEX, message_text)
-    ifsc_codes = re.findall(IFSC_REGEX, message_text)
+    upi_ids = re.findall(UPI_REGEX, message_text or "")
+    urls = re.findall(URL_REGEX, message_text or "")
+    bank_accounts = re.findall(BANK_REGEX, message_text or "")
+    ifsc_codes = re.findall(IFSC_REGEX, message_text or "")
 
     # Keyword hits (unique)
     keyword_hits = []
@@ -133,14 +114,12 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     )
 
     # -----------------------------
-    # Confidence Scoring (more realistic)
+    # Confidence Scoring (realistic + strong signals)
     # -----------------------------
     score = 0.0
 
-    # keyword base
     score += len(keyword_hits) * 0.10
 
-    # strong indicators
     if urls:
         score += 0.45
     if upi_ids:
@@ -148,9 +127,9 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     if bank_accounts or ifsc_codes:
         score += 0.45
     if has_otp:
-        score += 0.55  # OTP is very high risk
+        score += 0.55
 
-    # stage-based boosts (helps multi-turn)
+    # stage-based boosts
     if scam_stage == "SOCIAL_ENGINEERING":
         score += 0.20
     elif scam_stage == "URGENCY":
@@ -164,7 +143,6 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     elif scam_stage == "OTP_FRAUD":
         score += 0.35
 
-    # history boost
     score += history_boost(history)
 
     score = min(score, 1.0)
@@ -185,7 +163,6 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     elif scam_stage in ["SOCIAL_ENGINEERING", "REWARD_LURE", "URGENCY"]:
         scam_type = scam_stage
 
-    # Fallback: if detected but still None
     if scam_detected and scam_type is None:
         scam_type = "GENERIC_SCAM"
 
