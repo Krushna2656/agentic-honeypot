@@ -15,20 +15,28 @@ EMAIL_REGEX = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
 UPI_URI_REGEX = r"upi://pay[^\s]+"
 
 QR_HINTS = ["scan", "qr", "barcode", "upi qr", "scan code", "qr code"]
-PAYMENT_WORDS = ["pay", "transfer", "send money", "deposit", "processing fee", "charge", "collect request", "request money", "upi", "₹", "rs", "inr"]
+PAYMENT_WORDS = [
+    "pay", "transfer", "send money", "deposit", "processing fee", "charge",
+    "collect request", "request money", "upi", "₹", "rs", "inr"
+]
 
 
 def extract_features(message_text: str) -> Dict[str, Any]:
-    text = (message_text or "").lower()
+    """
+    Extract raw intelligence signals from a message.
+    (Confidence + sourceTurn will be added in main.py where we know turn number.)
+    """
+    raw = message_text or ""
+    text = raw.lower()
 
-    upi_ids = re.findall(UPI_REGEX, message_text or "")
-    urls = re.findall(URL_REGEX, message_text or "")
-    upi_uris = re.findall(UPI_URI_REGEX, message_text or "")
+    upi_ids = re.findall(UPI_REGEX, raw)
+    urls = re.findall(URL_REGEX, raw)
+    upi_uris = re.findall(UPI_URI_REGEX, raw)
 
-    bank_accounts = re.findall(BANK_REGEX, message_text or "")
-    ifsc_codes = re.findall(IFSC_REGEX, message_text or "")
-    phones = re.findall(PHONE_REGEX, message_text or "")
-    emails = re.findall(EMAIL_REGEX, message_text or "")
+    bank_accounts = re.findall(BANK_REGEX, raw)
+    ifsc_codes = re.findall(IFSC_REGEX, raw)
+    phones = re.findall(PHONE_REGEX, raw)
+    emails = re.findall(EMAIL_REGEX, raw)
 
     # Heuristic signals
     has_qr_intent = any(word in text for word in QR_HINTS) or (len(upi_uris) > 0)
@@ -39,12 +47,12 @@ def extract_features(message_text: str) -> Dict[str, Any]:
 
     return {
         # Raw stats
-        "length": len(message_text or ""),
-        "hasNumbers": any(char.isdigit() for char in (message_text or "")),
-        "hasUpperCase": any(char.isupper() for char in (message_text or "")),
-        "specialChars": sum(not c.isalnum() for c in (message_text or "")),
+        "length": len(raw),
+        "hasNumbers": any(char.isdigit() for char in raw),
+        "hasUpperCase": any(char.isupper() for char in raw),
+        "specialChars": sum(not c.isalnum() for c in raw),
 
-        # High-value intelligence
+        # High-value intelligence (RAW lists)
         "upiIds": list(dict.fromkeys(upi_ids)),
         "bankAccounts": list(dict.fromkeys(bank_accounts)),
         "ifscCodes": list(dict.fromkeys(ifsc_codes)),
