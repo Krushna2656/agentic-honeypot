@@ -21,14 +21,31 @@ def _pick(options: List[str]) -> str:
     return random.choice(options)
 
 
+def _normalize_list(items):
+    """
+    items can be:
+      - ["verify@upi"]
+      - [{"value":"verify@upi","confidence":0.92,"sourceTurn":1}]
+    We normalize to list[str] of values only.
+    """
+    out = []
+    for it in items or []:
+        if isinstance(it, dict) and "value" in it:
+            out.append(it["value"])
+        elif isinstance(it, str):
+            out.append(it)
+    return out
+
+
 def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     extracted = extracted or {}
-    upi = extracted.get("upiIds") or []
-    banks = extracted.get("bankAccounts") or []
-    ifsc = extracted.get("ifscCodes") or []
-    links = extracted.get("phishingLinks") or extracted.get("links") or []
-    phones = extracted.get("phoneNumbers") or []
-    emails = extracted.get("emailIds") or []
+
+    upi = _normalize_list(extracted.get("upiIds"))
+    banks = _normalize_list(extracted.get("bankAccounts"))
+    ifsc = _normalize_list(extracted.get("ifscCodes"))
+    links = _normalize_list(extracted.get("phishingLinks") or extracted.get("links"))
+    phones = _normalize_list(extracted.get("phoneNumbers"))
+    emails = _normalize_list(extracted.get("emailIds"))
 
     return {
         "need_upi": len(upi) == 0,
@@ -89,10 +106,11 @@ def generate_reply(
         "If this UPI fails, do you have another UPI ID I can try?"
     ]
 
-    # Optional extra intel ask (useful in real evals)
-    ask_contact_details = [
+    # ✅ Best phishing follow-up: contact details (more realistic than bank)
+    ask_support_contact = [
         "Aapka support number kya hai? Call karke confirm karna hai.",
-        "Official email ID bhej do, I’ll forward screenshot there."
+        "Official email ID bhej do, main wahi pe forward karke verify karunga.",
+        "Ticket/reference number kya hai? Without that I can’t proceed."
     ]
 
     # Stage-based base prompts
@@ -144,9 +162,13 @@ def generate_reply(
     # ------------------ INTEL MODE ------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # Priority 1: PHISHING links (high value)
+        # Priority 1: Get link if missing (only when stage suggests link scams)
         if gaps["need_link"] and stage in ["PHISHING", "SOCIAL_ENGINEERING", "URGENCY"]:
             return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
+
+        # ✅ If phishing link already exists → ask contact / ticket (more realistic)
+        if stage == "PHISHING" and (not gaps["need_link"]):
+            return {"agentReply": _pick(ask_support_contact), "agentGoal": "Extract official contact details for intelligence."}
 
         # Priority 2: Payment/UPI details
         if gaps["need_upi"] and (has_payment_intent or stage in ["PAYMENT_REQUEST", "URGENCY", "SOCIAL_ENGINEERING"]):
@@ -156,17 +178,13 @@ def generate_reply(
         if has_qr_intent and (not gaps["need_upi"]):
             return {"agentReply": _pick(ask_receiver_or_collect), "agentGoal": "Extend conversation using QR/collect flow."}
 
-        # Priority 3: Bank details (A/C + IFSC)
+        # Priority 3: Bank details
         if gaps["need_bank"]:
             return {"agentReply": _pick(ask_bank), "agentGoal": "Extract bank account details."}
 
         # If bank exists but IFSC missing
         if (not gaps["need_bank"]) and gaps["need_ifsc"]:
             return {"agentReply": _pick(ask_ifsc_only), "agentGoal": "Extract IFSC to complete bank intelligence."}
-
-        # Bonus: contact details (optional intel)
-        if gaps["need_phone"] or gaps["need_email"]:
-            return {"agentReply": _pick(ask_contact_details), "agentGoal": "Extract official contact details for intelligence."}
 
         followups = [
             "Okay, I noted that. What’s the next step?",
