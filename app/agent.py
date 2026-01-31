@@ -23,7 +23,6 @@ def _values_only(items: Any) -> List[str]:
     Supports BOTH formats:
       - ["verify@upi"]
       - [{"value":"verify@upi","confidence":0.92,"sourceTurn":1}]
-    Returns list[str]
     """
     if not items:
         return []
@@ -55,6 +54,8 @@ def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
         "need_link": len(links) == 0,
         "need_phone": len(phones) == 0,
         "need_email": len(emails) == 0,
+        "has_link": len(links) > 0,
+        "has_upi": len(upi) > 0,
     }
 
 
@@ -82,6 +83,13 @@ def generate_reply(
         "Can you send the official verification link again? The page didn’t open.",
         "Please share the exact link. I want to make sure I’m on the right site.",
         "The link isn’t loading—send the correct URL once more."
+    ]
+
+    # ✅ PHISHING stage: link is already present -> ask what page is asking
+    phishing_followup = [
+        "I opened it. It’s asking for details—what exactly should I fill?",
+        "The page looks different. Which option should I click?",
+        "It’s asking for OTP/UPI PIN—are you sure this is required?"
     ]
 
     ask_upi = [
@@ -133,23 +141,29 @@ def generate_reply(
     # ------------------ INTEL MODE ------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # Priority 1: Get link (if stage suggests phishing/verification)
-        if gaps["need_link"] and stage in ["PHISHING", "SOCIAL_ENGINEERING", "URGENCY"]:
+        # ✅ Rule 1: PHISHING stage is ALWAYS link-first
+        if stage == "PHISHING":
+            if gaps["need_link"]:
+                return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
+            # link already exists -> don't ask UPI yet, keep phishing convo alive
+            return {"agentReply": _pick(phishing_followup), "agentGoal": "Keep phishing engagement realistic and gather next-step instructions."}
+
+        # ✅ Rule 2: If verification/urgency without link, ask link
+        if gaps["need_link"] and stage in ["SOCIAL_ENGINEERING", "URGENCY"]:
             return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
 
-        # Priority 2: Get UPI (very high value)
-        if gaps["need_upi"] and (has_payment_intent or stage in ["PAYMENT_REQUEST", "URGENCY", "SOCIAL_ENGINEERING", "PHISHING"]):
+        # ✅ Rule 3: Ask UPI only when PAYMENT_REQUEST OR payment intent present
+        if gaps["need_upi"] and (has_payment_intent or stage == "PAYMENT_REQUEST"):
             return {"agentReply": _pick(ask_upi), "agentGoal": "Extract UPI ID / receiver handle."}
 
         # QR flow: already have UPI, extend using collect/receiver-name
         if has_qr_intent and (not gaps["need_upi"]):
             return {"agentReply": _pick(ask_receiver_or_collect), "agentGoal": "Extend conversation using QR/collect flow."}
 
-        # Priority 3: Bank details
+        # Bank details
         if gaps["need_bank"]:
             return {"agentReply": _pick(ask_bank), "agentGoal": "Extract bank account details."}
 
-        # If bank exists but IFSC missing
         if (not gaps["need_bank"]) and gaps["need_ifsc"]:
             return {"agentReply": _pick(ask_ifsc_only), "agentGoal": "Extract IFSC to complete bank intelligence."}
 
