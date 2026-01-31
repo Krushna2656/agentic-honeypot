@@ -235,6 +235,8 @@ def receive_message(
             "scamType": detection["scamType"]
         },
 
+        "threatClusterId": detection.get("indicators", {}).get("threatClusterId"),
+
         "agentStatus": {
             "activated": agent_result.get("activated", agent_result.get("agentMode") != "PASSIVE"),
             "riskLevel": agent_result["riskLevel"],

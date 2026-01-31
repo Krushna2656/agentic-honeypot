@@ -1,9 +1,6 @@
 import random
 from typing import Dict, Any, Optional, List
 
-# -----------------------------
-# Persona (believable human)
-# -----------------------------
 PERSONA = {
     "name": "Rahul",
     "style": "non-technical, polite, slightly anxious, cooperative",
@@ -21,31 +18,35 @@ def _pick(options: List[str]) -> str:
     return random.choice(options)
 
 
-def _normalize_list(items):
+def _values_only(items: Any) -> List[str]:
     """
-    items can be:
+    Supports BOTH formats:
       - ["verify@upi"]
       - [{"value":"verify@upi","confidence":0.92,"sourceTurn":1}]
-    We normalize to list[str] of values only.
+    Returns list[str]
     """
-    out = []
-    for it in items or []:
-        if isinstance(it, dict) and "value" in it:
-            out.append(it["value"])
-        elif isinstance(it, str):
-            out.append(it)
-    return out
+    if not items:
+        return []
+    if isinstance(items, list):
+        out = []
+        for x in items:
+            if isinstance(x, str):
+                out.append(x)
+            elif isinstance(x, dict) and "value" in x:
+                out.append(str(x["value"]))
+        return [v for v in out if v and str(v).strip()]
+    return []
 
 
 def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     extracted = extracted or {}
 
-    upi = _normalize_list(extracted.get("upiIds"))
-    banks = _normalize_list(extracted.get("bankAccounts"))
-    ifsc = _normalize_list(extracted.get("ifscCodes"))
-    links = _normalize_list(extracted.get("phishingLinks") or extracted.get("links"))
-    phones = _normalize_list(extracted.get("phoneNumbers"))
-    emails = _normalize_list(extracted.get("emailIds"))
+    upi = _values_only(extracted.get("upiIds"))
+    banks = _values_only(extracted.get("bankAccounts"))
+    ifsc = _values_only(extracted.get("ifscCodes"))
+    links = _values_only(extracted.get("phishingLinks")) or _values_only(extracted.get("links"))
+    phones = _values_only(extracted.get("phoneNumbers"))
+    emails = _values_only(extracted.get("emailIds"))
 
     return {
         "need_upi": len(upi) == 0,
@@ -77,16 +78,22 @@ def generate_reply(
         "I don’t understand this. What should I do step by step?"
     ]
 
+    ask_link = [
+        "Can you send the official verification link again? The page didn’t open.",
+        "Please share the exact link. I want to make sure I’m on the right site.",
+        "The link isn’t loading—send the correct URL once more."
+    ]
+
     ask_upi = [
         "Which exact UPI ID should I use? Please send it again.",
         "Can you share the UPI handle (like name@bank) so I don’t type wrong?",
         "What’s the UPI ID and receiver name? I want to confirm before paying."
     ]
 
-    ask_link = [
-        "Can you send the official verification link again? The page didn’t open.",
-        "Please share the exact link. I want to make sure I’m on the right site.",
-        "The link isn’t loading—send the correct URL once more."
+    ask_receiver_or_collect = [
+        "Receiver name kya aayega? (UPI pe jo name show hota hai) I want to confirm.",
+        "Can you send a collect request? I’m not able to type the UPI ID correctly.",
+        "If this UPI fails, do you have another UPI ID I can try?"
     ]
 
     ask_bank = [
@@ -100,53 +107,20 @@ def generate_reply(
         "Receiver bank ka IFSC kya hai? Without IFSC it’s not allowing."
     ]
 
-    ask_receiver_or_collect = [
-        "Receiver name kya aayega? (UPI pe jo name show hota hai) I want to confirm.",
-        "Can you send a collect request? I’m not able to type the UPI ID correctly.",
-        "If this UPI fails, do you have another UPI ID I can try?"
-    ]
-
-    # ✅ Best phishing follow-up: contact details (more realistic than bank)
-    ask_support_contact = [
+    ask_contact_details = [
         "Aapka support number kya hai? Call karke confirm karna hai.",
-        "Official email ID bhej do, main wahi pe forward karke verify karunga.",
-        "Ticket/reference number kya hai? Without that I can’t proceed."
+        "Official email ID bhej do, I’ll forward screenshot there."
     ]
 
-    # Stage-based base prompts
     stage_prompts = {
-        "RECON": [
-            "Hi, yes—what is this about?",
-            "Hello. Which service are you calling from?"
-        ],
-        "SOCIAL_ENGINEERING": [
-            "I’m worried now. What verification is needed?",
-            "Why is my account suspended? I didn’t do anything."
-        ],
-        "URGENCY": [
-            "Okay okay, I don’t want it blocked. What do I do now?",
-            "Please guide quickly. I’m not technical."
-        ],
-        "PAYMENT_REQUEST": [
-            "You’re asking payment… I need exact details so I don’t make a mistake.",
-            "I can do it, but tell me the exact ID/link."
-        ],
-        "PHISHING": [
-            "I clicked but it looks different.",
-            "The site is asking too many things."
-        ],
-        "OTP_FRAUD": [
-            "OTP? But why OTP is needed for this?",
-            "I got OTP, but I’m scared to share. What is it for?"
-        ],
-        "REWARD_LURE": [
-            "Really? What do I need to do to claim it?",
-            "Okay… what’s the process for the reward?"
-        ],
-        "UNKNOWN": [
-            "Can you clarify what you need from me?",
-            "What is this regarding? Please explain."
-        ]
+        "RECON": ["Hi, yes—what is this about?", "Hello. Which service are you calling from?"],
+        "SOCIAL_ENGINEERING": ["I’m worried now. What verification is needed?", "Why is my account suspended? I didn’t do anything."],
+        "URGENCY": ["Okay okay, I don’t want it blocked. What do I do now?", "Please guide quickly. I’m not technical."],
+        "PAYMENT_REQUEST": ["You’re asking payment… I need exact details so I don’t make a mistake.", "I can do it, but tell me the exact ID/link."],
+        "PHISHING": ["I clicked but it looks different.", "The site is asking too many things."],
+        "OTP_FRAUD": ["OTP? But why OTP is needed for this?", "I got OTP, but I’m scared to share. What is it for?"],
+        "REWARD_LURE": ["Really? What do I need to do to claim it?", "Okay… what’s the process for the reward?"],
+        "UNKNOWN": ["Can you clarify what you need from me?", "What is this regarding? Please explain."]
     }
 
     base = _pick(stage_prompts.get(stage, stage_prompts["UNKNOWN"]))
@@ -154,27 +128,20 @@ def generate_reply(
     # ------------------ SOFT MODE ------------------
     if mode == "SOFT_ENGAGEMENT":
         reply = _pick([base] + soft_openers)
-        return {
-            "agentReply": reply,
-            "agentGoal": "Keep scammer engaged and gather more signals without exposure."
-        }
+        return {"agentReply": reply, "agentGoal": "Keep scammer engaged and gather more signals without exposure."}
 
     # ------------------ INTEL MODE ------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # Priority 1: Get link if missing (only when stage suggests link scams)
+        # Priority 1: Get link (if stage suggests phishing/verification)
         if gaps["need_link"] and stage in ["PHISHING", "SOCIAL_ENGINEERING", "URGENCY"]:
             return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
 
-        # ✅ If phishing link already exists → ask contact / ticket (more realistic)
-        if stage == "PHISHING" and (not gaps["need_link"]):
-            return {"agentReply": _pick(ask_support_contact), "agentGoal": "Extract official contact details for intelligence."}
-
-        # Priority 2: Payment/UPI details
-        if gaps["need_upi"] and (has_payment_intent or stage in ["PAYMENT_REQUEST", "URGENCY", "SOCIAL_ENGINEERING"]):
+        # Priority 2: Get UPI (very high value)
+        if gaps["need_upi"] and (has_payment_intent or stage in ["PAYMENT_REQUEST", "URGENCY", "SOCIAL_ENGINEERING", "PHISHING"]):
             return {"agentReply": _pick(ask_upi), "agentGoal": "Extract UPI ID / receiver handle."}
 
-        # If QR intent -> ask for QR / collect request
+        # QR flow: already have UPI, extend using collect/receiver-name
         if has_qr_intent and (not gaps["need_upi"]):
             return {"agentReply": _pick(ask_receiver_or_collect), "agentGoal": "Extend conversation using QR/collect flow."}
 
@@ -185,6 +152,10 @@ def generate_reply(
         # If bank exists but IFSC missing
         if (not gaps["need_bank"]) and gaps["need_ifsc"]:
             return {"agentReply": _pick(ask_ifsc_only), "agentGoal": "Extract IFSC to complete bank intelligence."}
+
+        # Bonus: contact details
+        if gaps["need_phone"] or gaps["need_email"]:
+            return {"agentReply": _pick(ask_contact_details), "agentGoal": "Extract official contact details for intelligence."}
 
         followups = [
             "Okay, I noted that. What’s the next step?",
@@ -217,14 +188,8 @@ def agent_decision(
     scam_type = analysis.get("scamType")
     stage = analysis.get("scamStage")
 
-    # HIGH: intelligence extraction
     if score >= 0.8:
-        reply_pack = generate_reply(
-            mode="INTELLIGENCE_EXTRACTION",
-            stage=stage,
-            scam_type=scam_type,
-            extracted=extracted_intelligence
-        )
+        reply_pack = generate_reply("INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence)
         return {
             "activated": True,
             "riskLevel": "HIGH",
@@ -236,14 +201,8 @@ def agent_decision(
             "persona": PERSONA["style"]
         }
 
-    # MEDIUM: soft engagement
     if score >= 0.5:
-        reply_pack = generate_reply(
-            mode="SOFT_ENGAGEMENT",
-            stage=stage,
-            scam_type=scam_type,
-            extracted=extracted_intelligence
-        )
+        reply_pack = generate_reply("SOFT_ENGAGEMENT", stage, scam_type, extracted_intelligence)
         return {
             "activated": True,
             "riskLevel": "MEDIUM",
