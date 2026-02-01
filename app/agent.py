@@ -58,7 +58,7 @@ def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
         "need_email": len(emails) == 0,
         "has_link": len(links) > 0,
         "has_upi": len(upi) > 0,
-        "has_any_strong": has_any_strong,  # ✅ CHANGED
+        "has_any_strong": has_any_strong,
     }
 
 
@@ -88,7 +88,7 @@ def generate_reply(
         "The link isn’t loading—send the correct URL once more."
     ]
 
-    # ✅ PHISHING stage: link is already present -> ask what page is asking
+    # PHISHING stage: link is already present -> ask what page is asking
     phishing_followup = [
         "I opened it. It’s asking for details—what exactly should I fill?",
         "The page looks different. Which option should I click?",
@@ -123,6 +123,13 @@ def generate_reply(
         "Official email ID bhej do, I’ll forward screenshot there."
     ]
 
+    # ✅ CHANGED: phishing + payment followups (when UPI already present)
+    phishing_payment_followup = [
+        "UPI me receiver name kya dikh raha hai? I want to confirm before paying.",
+        "Payment fail ho gaya to kya bank transfer karna hai? Account + IFSC bhej do.",
+        "Amount kitna exactly dalna hai? And receiver name confirm kar do."
+    ]
+
     stage_prompts = {
         "RECON": ["Hi, yes—what is this about?", "Hello. Which service are you calling from?"],
         "SOCIAL_ENGINEERING": ["I’m worried now. What verification is needed?", "Why is my account suspended? I didn’t do anything."],
@@ -144,10 +151,15 @@ def generate_reply(
     # ------------------ INTEL MODE ------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # ✅ Rule 1: PHISHING stage is ALWAYS link-first
+        # ✅ Rule 1: PHISHING stage link-first, BUT if UPI already present -> shift to payment followup
         if stage == "PHISHING":
             if gaps["need_link"]:
                 return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
+
+            # ✅ CHANGED: if UPI already exists (or payment intent), move to payment flow
+            if gaps["has_upi"] or has_payment_intent:
+                return {"agentReply": _pick(phishing_payment_followup), "agentGoal": "Continue extraction by moving phishing into payment flow (receiver/bank details)."}
+
             return {"agentReply": _pick(phishing_followup), "agentGoal": "Keep phishing engagement realistic and gather next-step instructions."}
 
         # ✅ Rule 2: If verification/urgency without link, ask link
@@ -190,7 +202,7 @@ def agent_decision(
 ) -> Dict[str, Any]:
 
     extracted_intelligence = extracted_intelligence or {}
-    gaps = _intel_gaps(extracted_intelligence)  # ✅ CHANGED
+    gaps = _intel_gaps(extracted_intelligence)
 
     if not analysis.get("scamDetected", False):
         return {
@@ -207,7 +219,7 @@ def agent_decision(
     scam_type = analysis.get("scamType")
     stage = analysis.get("scamStage")
 
-    # ✅ CHANGED: once strong evidence exists, keep extraction even at medium score
+    # once strong evidence exists, keep extraction even at medium score
     evidence_lock = gaps["has_any_strong"] or bool(extracted_intelligence.get("hasPaymentIntent")) or bool(extracted_intelligence.get("hasQRIntent"))
 
     if score >= 0.8:
@@ -223,7 +235,7 @@ def agent_decision(
             "persona": PERSONA["style"]
         }
 
-    # ✅ CHANGED: medium score but evidence exists => still extract
+    # medium score but evidence exists => still extract
     if score >= 0.5 and evidence_lock:
         reply_pack = generate_reply("INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence)
         return {

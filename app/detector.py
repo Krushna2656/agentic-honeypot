@@ -46,7 +46,7 @@ def _contains_any(text: str, words: List[str]) -> bool:
     return any(w in text for w in words)
 
 
-# ✅ CHANGED: dict-safe history text read
+# ✅ dict-safe history text read
 def _get_text(msg: Any) -> str:
     if isinstance(msg, dict):
         return (msg.get("text") or "")
@@ -110,7 +110,7 @@ def detect_stage(
     if has_otp or _contains_any(text, SCAM_KEYWORDS["OTP_FRAUD"]):
         return "OTP_FRAUD"
 
-    # ✅ CHANGED: bank also implies payment_request (prevents downgrade)
+    # bank also implies payment_request (prevents downgrade)
     payment_intent = has_upi_id or has_bank or _contains_any(text, SCAM_KEYWORDS["PAYMENT_REQUEST"])
     if payment_intent:
         return "PAYMENT_REQUEST"
@@ -139,7 +139,7 @@ def history_boost(history: Optional[List[Any]]) -> float:
 
     repeat_hits = 0
     for msg in history:
-        msg_text = _get_text(msg).lower()  # ✅ CHANGED
+        msg_text = _get_text(msg).lower()
         if any(
             kw in msg_text
             for keywords in SCAM_KEYWORDS.values()
@@ -150,7 +150,6 @@ def history_boost(history: Optional[List[Any]]) -> float:
     return min(0.08 * repeat_hits, 0.32)
 
 
-# ✅ CHANGED: scan strong signals in history to prevent stage/type downgrade
 def _scan_history_strong_signals(history: Optional[List[Any]]) -> Dict[str, bool]:
     any_url = False
     any_upi = False
@@ -193,7 +192,7 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
 
     has_otp_current = ("otp" in text) or ("one time password" in text) or _contains_any(text, SCAM_KEYWORDS["OTP_FRAUD"])
 
-    # ✅ CHANGED: history strong signals
+    # history strong signals
     hist = history or []
     hist_flags = _scan_history_strong_signals(hist)
 
@@ -210,10 +209,10 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
 
     scam_stage = detect_stage(
         text,
-        has_upi_id=has_upi_any,      # ✅ CHANGED
-        has_url=has_url_any,         # ✅ CHANGED
-        has_bank=has_bank_any,       # ✅ CHANGED
-        has_otp=has_otp_any          # ✅ CHANGED
+        has_upi_id=has_upi_any,
+        has_url=has_url_any,
+        has_bank=has_bank_any,
+        has_otp=has_otp_any
     )
 
     # -----------------------------
@@ -238,7 +237,7 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     if has_otp_current:
         score += 0.60  # OTP = high risk
 
-    # ✅ CHANGED: cumulative evidence booster so score doesn't drop
+    # cumulative evidence booster so score doesn't drop
     if (not urls) and has_url_any:
         score += 0.10
     if (not upi_ids) and has_upi_any:
@@ -260,7 +259,7 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     score += stage_boost.get(scam_stage, 0.0)
 
     # multi-turn memory
-    score += history_boost(hist)  # ✅ CHANGED
+    score += history_boost(hist)
 
     # benign guard
     has_strong_signal = bool(urls or upi_ids or bank_accounts or ifsc_codes or has_otp_current)
@@ -270,22 +269,39 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     scam_detected = score >= 0.5
 
     # -----------------------------
+    # ✅ CHANGED: normalize output for benign messages
+    # -----------------------------
+    if not scam_detected:
+        return {
+            "scamDetected": False,
+            "confidenceScore": round(score, 2),
+            "scamStage": "BENIGN",     # ✅ CHANGED
+            "scamType": None,          # ✅ CHANGED
+            "indicators": {
+                "keywords": keyword_hits,
+                "upiIds": upi_ids,
+                "bankAccounts": bank_accounts,
+                "ifscCodes": ifsc_codes,
+                "links": urls
+            }
+        }
+
+    # -----------------------------
     # Scam type: ONLY if detected (uses cumulative flags)
     # -----------------------------
     scam_type = None
-    if scam_detected:
-        if has_url_any:
-            scam_type = "PHISHING"
-        elif has_otp_any:
-            scam_type = "OTP_FRAUD"
-        elif has_upi_any:
-            scam_type = "UPI_FRAUD"
-        elif has_bank_any:
-            scam_type = "BANK_FRAUD"
-        elif scam_stage in ["SOCIAL_ENGINEERING", "REWARD_LURE", "URGENCY"]:
-            scam_type = scam_stage
-        else:
-            scam_type = "GENERIC_SCAM"
+    if has_url_any:
+        scam_type = "PHISHING"
+    elif has_otp_any:
+        scam_type = "OTP_FRAUD"
+    elif has_upi_any:
+        scam_type = "UPI_FRAUD"
+    elif has_bank_any:
+        scam_type = "BANK_FRAUD"
+    elif scam_stage in ["SOCIAL_ENGINEERING", "REWARD_LURE", "URGENCY"]:
+        scam_type = scam_stage
+    else:
+        scam_type = "GENERIC_SCAM"
 
     return {
         "scamDetected": scam_detected,
