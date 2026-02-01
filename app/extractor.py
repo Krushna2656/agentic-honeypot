@@ -21,10 +21,14 @@ PAYMENT_WORDS = [
 ]
 
 
+def _dedupe(items):
+    return list(dict.fromkeys(items or []))
+
+
 def extract_features(message_text: str) -> Dict[str, Any]:
     """
     Extract raw intelligence signals from a message.
-    (Confidence + sourceTurn will be added in main.py where we know turn number.)
+    (Confidence + sourceTurn are added in main.py where we know turn number.)
     """
     raw = message_text or ""
     text = raw.lower()
@@ -43,7 +47,7 @@ def extract_features(message_text: str) -> Dict[str, Any]:
     has_payment_intent = any(word in text for word in PAYMENT_WORDS)
 
     # URLs also include UPI deep links if any
-    phishing_links = list(dict.fromkeys(urls + upi_uris))
+    phishing_links = _dedupe(urls + upi_uris)
 
     return {
         # Raw stats
@@ -53,12 +57,12 @@ def extract_features(message_text: str) -> Dict[str, Any]:
         "specialChars": sum(not c.isalnum() for c in raw),
 
         # High-value intelligence (RAW lists)
-        "upiIds": list(dict.fromkeys(upi_ids)),
-        "bankAccounts": list(dict.fromkeys(bank_accounts)),
-        "ifscCodes": list(dict.fromkeys(ifsc_codes)),
+        "upiIds": _dedupe(upi_ids),
+        "bankAccounts": _dedupe(bank_accounts),
+        "ifscCodes": _dedupe(ifsc_codes),
         "phishingLinks": phishing_links,
-        "phoneNumbers": list(dict.fromkeys(phones)),
-        "emailIds": list(dict.fromkeys(emails)),
+        "phoneNumbers": _dedupe(phones),
+        "emailIds": _dedupe(emails),
 
         # Behavioral signals (for agent strategy)
         "hasQRIntent": has_qr_intent,

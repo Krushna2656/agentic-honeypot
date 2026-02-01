@@ -20,3 +20,10 @@ class IncomingMessage(BaseModel):
 
     # ✅ FIX: mutable default should use default_factory
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    # ✅ CHANGED: allow "history" alias too
+    class Config:
+        allow_population_by_field_name = True
+        fields = {
+            "conversationHistory": {"alias": "history"}
+        }

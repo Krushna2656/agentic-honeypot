@@ -76,13 +76,25 @@ def _finalize_evidence(store: Dict[str, Dict[str, Any]]) -> Dict[str, List[Dict[
     return out
 
 
+# ✅ CHANGED: supports dict history + pydantic history safely
+def _get_text_from_msg(msg: Any) -> str:
+    """
+    Supports:
+      - dict: {"text": "..."}
+      - pydantic: msg.text
+    """
+    if isinstance(msg, dict):
+        return msg.get("text", "") or ""
+    return getattr(msg, "text", "") or ""
+
+
 def aggregate_evidence_from_history(history, current_text: str):
     evidence_map: Dict[str, Dict[str, Any]] = {}
 
     # history
     for i, msg in enumerate(history or []):
         turn = i + 1
-        f = extract_features(getattr(msg, "text", ""))
+        f = extract_features(_get_text_from_msg(msg))  # ✅ CHANGED
 
         _add_evidence(evidence_map, "upiIds", f.get("upiIds", []), turn)
         _add_evidence(evidence_map, "bankAccounts", f.get("bankAccounts", []), turn)
@@ -110,7 +122,7 @@ def aggregate_evidence_from_history(history, current_text: str):
     has_qr = False
     has_pay = False
     for msg in history or []:
-        f = extract_features(getattr(msg, "text", ""))
+        f = extract_features(_get_text_from_msg(msg))  # ✅ CHANGED
         has_qr = has_qr or bool(f.get("hasQRIntent", False))
         has_pay = has_pay or bool(f.get("hasPaymentIntent", False))
 
@@ -190,31 +202,56 @@ def receive_message(
     session_id = data.sessionId
     now = time.time()
 
+    # ✅ CHANGED: server-side history + stable cluster cache
     if session_id not in SESSION_STORE:
-        SESSION_STORE[session_id] = {"startedAt": now, "lastSeenAt": now, "turns": 0}
+        SESSION_STORE[session_id] = {
+            "startedAt": now,
+            "lastSeenAt": now,
+            "turns": 0,
+            "history": [],               # ✅ CHANGED
+            "threatClusterId": None       # ✅ CHANGED
+        }
     else:
         SESSION_STORE[session_id]["lastSeenAt"] = now
 
-    SESSION_STORE[session_id]["turns"] += 1
+    # ✅ CHANGED: use server history (NOT client conversationHistory)
+    server_history = SESSION_STORE[session_id]["history"]
 
-    # 1) detection (rule engine)
-    detection = detect_scam(data.message.text, data.conversationHistory)
+    # ✅ CHANGED: true turn index derived from server history
+    current_turn = len(server_history) + 1
+    SESSION_STORE[session_id]["turns"] = current_turn
 
-    # 2) cumulative evidence
-    final_intel = aggregate_evidence_from_history(data.conversationHistory, data.message.text)
+    # 1) detection (rule engine) using SERVER history
+    detection = detect_scam(data.message.text, server_history)  # ✅ CHANGED
 
-    # ✅ stable cluster id from cumulative intel
-    stable_cluster_id = compute_threat_cluster_id(final_intel)
+    # 2) cumulative evidence using SERVER history
+    final_intel = aggregate_evidence_from_history(server_history, data.message.text)  # ✅ CHANGED
+
+    # ✅ CHANGED: stable cluster id set once; if None earlier, set when available
+    existing_cluster_id = SESSION_STORE[session_id].get("threatClusterId")
+    computed_cluster_id = compute_threat_cluster_id(final_intel)
+
+    if existing_cluster_id is None and computed_cluster_id is not None:
+        SESSION_STORE[session_id]["threatClusterId"] = computed_cluster_id
+
+    stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
     # 3) agent
     agent_result = agent_decision(
         detection,
-        conversation_history=data.conversationHistory,
+        conversation_history=server_history,        # ✅ CHANGED
         extracted_intelligence=final_intel
     )
 
+    # ✅ CHANGED: append message AFTER processing (keeps current_turn correct)
+    server_history.append({
+        "sender": data.message.sender,
+        "text": data.message.text,
+        "timestamp": data.message.timestamp.isoformat() if hasattr(data.message.timestamp, "isoformat") else str(data.message.timestamp)
+    })
+
     duration_sec = int(now - SESSION_STORE[session_id]["startedAt"])
-    conversation_turns = max(SESSION_STORE[session_id]["turns"], len(data.conversationHistory) + 1)
+    conversation_turns = current_turn  # ✅ CHANGED (no drift)
 
     return {
         "sessionId": data.sessionId,

@@ -47,6 +47,8 @@ def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     phones = _values_only(extracted.get("phoneNumbers"))
     emails = _values_only(extracted.get("emailIds"))
 
+    has_any_strong = (len(upi) > 0) or (len(banks) > 0) or (len(ifsc) > 0) or (len(links) > 0)
+
     return {
         "need_upi": len(upi) == 0,
         "need_bank": len(banks) == 0,
@@ -56,6 +58,7 @@ def _intel_gaps(extracted: Optional[Dict[str, Any]]) -> Dict[str, bool]:
         "need_email": len(emails) == 0,
         "has_link": len(links) > 0,
         "has_upi": len(upi) > 0,
+        "has_any_strong": has_any_strong,  # ✅ CHANGED
     }
 
 
@@ -145,7 +148,6 @@ def generate_reply(
         if stage == "PHISHING":
             if gaps["need_link"]:
                 return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
-            # link already exists -> don't ask UPI yet, keep phishing convo alive
             return {"agentReply": _pick(phishing_followup), "agentGoal": "Keep phishing engagement realistic and gather next-step instructions."}
 
         # ✅ Rule 2: If verification/urgency without link, ask link
@@ -187,6 +189,9 @@ def agent_decision(
     extracted_intelligence: Optional[dict] = None
 ) -> Dict[str, Any]:
 
+    extracted_intelligence = extracted_intelligence or {}
+    gaps = _intel_gaps(extracted_intelligence)  # ✅ CHANGED
+
     if not analysis.get("scamDetected", False):
         return {
             "activated": False,
@@ -202,6 +207,9 @@ def agent_decision(
     scam_type = analysis.get("scamType")
     stage = analysis.get("scamStage")
 
+    # ✅ CHANGED: once strong evidence exists, keep extraction even at medium score
+    evidence_lock = gaps["has_any_strong"] or bool(extracted_intelligence.get("hasPaymentIntent")) or bool(extracted_intelligence.get("hasQRIntent"))
+
     if score >= 0.8:
         reply_pack = generate_reply("INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence)
         return {
@@ -210,6 +218,20 @@ def agent_decision(
             "action": "ENGAGE",
             "agentMode": "INTELLIGENCE_EXTRACTION",
             "message": f"High confidence {scam_type} detected at {stage} stage",
+            "agentReply": reply_pack["agentReply"],
+            "agentGoal": reply_pack["agentGoal"],
+            "persona": PERSONA["style"]
+        }
+
+    # ✅ CHANGED: medium score but evidence exists => still extract
+    if score >= 0.5 and evidence_lock:
+        reply_pack = generate_reply("INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence)
+        return {
+            "activated": True,
+            "riskLevel": "HIGH",
+            "action": "ENGAGE",
+            "agentMode": "INTELLIGENCE_EXTRACTION",
+            "message": f"Evidence present. Continuing extraction for {scam_type}.",
             "agentReply": reply_pack["agentReply"],
             "agentGoal": reply_pack["agentGoal"],
             "persona": PERSONA["style"]
