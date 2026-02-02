@@ -100,7 +100,8 @@ def detect_stage(
 ) -> str:
     """
     Priority stage detection:
-    PHISHING > OTP_FRAUD > PAYMENT_REQUEST > URGENCY > SOCIAL_ENGINEERING > REWARD_LURE > RECON
+    PHISHING > OTP_FRAUD > PAYMENT_REQUEST > SOCIAL_ENGINEERING > URGENCY > REWARD_LURE > RECON
+    ✅ FIX: SOCIAL_ENGINEERING before URGENCY (so KYC cases don't become only URGENCY)
     """
     text = (text or "").lower()
 
@@ -115,11 +116,12 @@ def detect_stage(
     if payment_intent:
         return "PAYMENT_REQUEST"
 
-    if _contains_any(text, SCAM_KEYWORDS["URGENCY"]):
-        return "URGENCY"
-
+    # ✅ FIX: if social-engineering keywords present, prefer it over urgency
     if _contains_any(text, SCAM_KEYWORDS["SOCIAL_ENGINEERING"]):
         return "SOCIAL_ENGINEERING"
+
+    if _contains_any(text, SCAM_KEYWORDS["URGENCY"]):
+        return "URGENCY"
 
     if _contains_any(text, SCAM_KEYWORDS["REWARD_LURE"]):
         return "REWARD_LURE"
@@ -269,14 +271,14 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     scam_detected = score >= 0.5
 
     # -----------------------------
-    # ✅ CHANGED: normalize output for benign messages
+    # normalize output for benign messages
     # -----------------------------
     if not scam_detected:
         return {
             "scamDetected": False,
             "confidenceScore": round(score, 2),
-            "scamStage": "BENIGN",     # ✅ CHANGED
-            "scamType": None,          # ✅ CHANGED
+            "scamStage": "BENIGN",
+            "scamType": None,
             "indicators": {
                 "keywords": keyword_hits,
                 "upiIds": upi_ids,

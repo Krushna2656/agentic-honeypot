@@ -15,9 +15,11 @@ EMAIL_REGEX = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
 UPI_URI_REGEX = r"upi://pay[^\s]+"
 
 QR_HINTS = ["scan", "qr", "barcode", "upi qr", "scan code", "qr code"]
+
+# ✅ FIX: "upi" word alone should NOT mean payment intent (UPI PIN change etc.)
 PAYMENT_WORDS = [
     "pay", "transfer", "send money", "deposit", "processing fee", "charge",
-    "collect request", "request money", "upi", "₹", "rs", "inr"
+    "collect request", "request money", "₹", "rs", "inr"
 ]
 
 
@@ -42,9 +44,17 @@ def extract_features(message_text: str) -> Dict[str, Any]:
     phones = re.findall(PHONE_REGEX, raw)
     emails = re.findall(EMAIL_REGEX, raw)
 
+    # ✅ FIX: remove phone numbers from bank_accounts
+    if bank_accounts:
+        bank_accounts = [b for b in bank_accounts if not re.fullmatch(PHONE_REGEX, b)]
+
     # Heuristic signals
     has_qr_intent = any(word in text for word in QR_HINTS) or (len(upi_uris) > 0)
-    has_payment_intent = any(word in text for word in PAYMENT_WORDS)
+
+    # ✅ FIX: payment intent should be true only for real payment signals
+    # 1) upi://pay deep link => payment intent
+    # 2) real payment words like pay/transfer/₹/rs/inr etc.
+    has_payment_intent = (len(upi_uris) > 0) or any(word in text for word in PAYMENT_WORDS)
 
     # URLs also include UPI deep links if any
     phishing_links = _dedupe(urls + upi_uris)
