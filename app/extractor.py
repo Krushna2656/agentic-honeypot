@@ -1,10 +1,12 @@
 import re
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # -----------------------------
 # Regex Patterns
 # -----------------------------
+# Broad match for candidate UPI-like strings (we will validate suffix)
 UPI_REGEX = r"\b[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}\b"
+
 URL_REGEX = r"https?://[^\s]+"
 BANK_REGEX = r"\b\d{9,18}\b"
 IFSC_REGEX = r"\b[A-Z]{4}0[A-Z0-9]{6}\b"
@@ -22,9 +24,48 @@ PAYMENT_WORDS = [
     "collect request", "request money", "₹", "rs", "inr"
 ]
 
+# -----------------------------
+# ✅ UPI Validation (PSP handles)
+# -----------------------------
+# Most common UPI PSP suffixes in India.
+# We keep this list reasonably broad for hackathon accuracy.
+VALID_UPI_SUFFIXES = {
+    "upi",
+    "okhdfcbank", "okicici", "oksbi", "okaxis", "okpnb", "okbob", "okboi",
+    "ybl", "ibl", "axl", "paytm", "apl", "ptys", "jio",
+    "icici", "hdfcbank", "sbi", "axisbank", "pnb", "bob", "boi", "kotak",
+    "indus", "idfcbank", "yesbank", "unionbank", "canarabank",
+    "fbl", "hsbc", "citi", "rbl",
+    # add a few commonly seen wallet/merchant style handles
+    "airtel", "freecharge"
+}
 
-def _dedupe(items):
+
+def _dedupe(items: List[str]):
     return list(dict.fromkeys(items or []))
+
+
+def _is_valid_upi_handle(candidate: str) -> bool:
+    """
+    Validates candidate like: name@psp
+    - must have '@'
+    - suffix must be in VALID_UPI_SUFFIXES
+    - avoids false positives like "support@helpdesk" (not a PSP suffix)
+    """
+    if not candidate or "@" not in candidate:
+        return False
+
+    cand = candidate.strip()
+    parts = cand.split("@", 1)
+    if len(parts) != 2:
+        return False
+
+    local, suffix = parts[0].strip(), parts[1].strip().lower()
+
+    if len(local) < 2:
+        return False
+
+    return suffix in VALID_UPI_SUFFIXES
 
 
 def extract_features(message_text: str) -> Dict[str, Any]:
@@ -35,7 +76,8 @@ def extract_features(message_text: str) -> Dict[str, Any]:
     raw = message_text or ""
     text = raw.lower()
 
-    upi_ids = re.findall(UPI_REGEX, raw)
+    # Raw extraction
+    upi_candidates = re.findall(UPI_REGEX, raw)
     urls = re.findall(URL_REGEX, raw)
     upi_uris = re.findall(UPI_URI_REGEX, raw)
 
@@ -48,10 +90,17 @@ def extract_features(message_text: str) -> Dict[str, Any]:
     if bank_accounts:
         bank_accounts = [b for b in bank_accounts if not re.fullmatch(PHONE_REGEX, b)]
 
+    # ✅ FIX: Tighten UPI extraction using PSP suffix validation
+    # This prevents email-like strings such as "support@helpdesk" from being treated as UPI.
+    upi_ids = []
+    for c in _dedupe(upi_candidates):
+        if _is_valid_upi_handle(c):
+            upi_ids.append(c)
+
     # Heuristic signals
     has_qr_intent = any(word in text for word in QR_HINTS) or (len(upi_uris) > 0)
 
-    # ✅ FIX: payment intent should be true only for real payment signals
+    # ✅ Payment intent should be true only for real payment signals
     # 1) upi://pay deep link => payment intent
     # 2) real payment words like pay/transfer/₹/rs/inr etc.
     has_payment_intent = (len(upi_uris) > 0) or any(word in text for word in PAYMENT_WORDS)
