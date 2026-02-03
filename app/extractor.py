@@ -19,10 +19,18 @@ UPI_URI_REGEX = r"upi://pay[^\s]+"
 QR_HINTS = ["scan", "qr", "barcode", "upi qr", "scan code", "qr code"]
 
 # ✅ FIX: "upi" word alone should NOT mean payment intent (UPI PIN change etc.)
+# NOTE: We will NOT use substring matching on these words anymore.
 PAYMENT_WORDS = [
     "pay", "transfer", "send money", "deposit", "processing fee", "charge",
     "collect request", "request money", "₹", "rs", "inr"
 ]
+
+# -----------------------------
+# ✅ Payment intent regex (word-boundary)
+# -----------------------------
+# Avoid substring issues like: "payment" contains "pay"
+PAYMENT_VERBS_REGEX = re.compile(r"\b(pay|transfer|deposit|charge|refund|send)\b", re.IGNORECASE)
+CURRENCY_WORD_REGEX = re.compile(r"\b(rs|inr)\b", re.IGNORECASE)
 
 # -----------------------------
 # ✅ UPI Validation (PSP handles)
@@ -92,7 +100,7 @@ def extract_features(message_text: str) -> Dict[str, Any]:
 
     # ✅ FIX: Tighten UPI extraction using PSP suffix validation
     # This prevents email-like strings such as "support@helpdesk" from being treated as UPI.
-    upi_ids = []
+    upi_ids: List[str] = []
     for c in _dedupe(upi_candidates):
         if _is_valid_upi_handle(c):
             upi_ids.append(c)
@@ -100,10 +108,15 @@ def extract_features(message_text: str) -> Dict[str, Any]:
     # Heuristic signals
     has_qr_intent = any(word in text for word in QR_HINTS) or (len(upi_uris) > 0)
 
-    # ✅ Payment intent should be true only for real payment signals
+    # ✅ FIX: Payment intent should be true only for real payment signals
     # 1) upi://pay deep link => payment intent
-    # 2) real payment words like pay/transfer/₹/rs/inr etc.
-    has_payment_intent = (len(upi_uris) > 0) or any(word in text for word in PAYMENT_WORDS)
+    # 2) payment verbs as standalone words (NOT substring)
+    # 3) currency markers: ₹ OR standalone rs/inr
+    has_currency_symbol = "₹" in raw
+    has_currency_word = bool(CURRENCY_WORD_REGEX.search(text))
+    has_payment_verb = bool(PAYMENT_VERBS_REGEX.search(text))
+
+    has_payment_intent = (len(upi_uris) > 0) or has_payment_verb or has_currency_symbol or has_currency_word
 
     # URLs also include UPI deep links if any
     phishing_links = _dedupe(urls + upi_uris)
