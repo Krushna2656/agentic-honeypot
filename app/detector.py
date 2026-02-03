@@ -267,6 +267,15 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     has_strong_signal = bool(urls or upi_ids or bank_accounts or ifsc_codes or has_otp_current)
     score += _benign_guard(text, keyword_hits, has_strong_signal)
 
+    # ✅ NEW FIX:
+    # Prevent "refund / pay / transfer" words alone from crossing detection threshold
+    # when there is NO strong indicator (no URL/UPI/BANK/IFSC/OTP)
+    if not has_strong_signal and scam_stage == "PAYMENT_REQUEST":
+        payment_keywords = SCAM_KEYWORDS.get("PAYMENT_REQUEST", [])
+        payment_hit = any(pk in text for pk in payment_keywords)
+        if payment_hit:
+            score = min(score, 0.49)
+
     score = max(0.0, min(score, 1.0))
     scam_detected = score >= 0.5
 
