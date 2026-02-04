@@ -114,7 +114,13 @@ def aggregate_evidence_from_history(history, current_text: str):
     _add_evidence(evidence_map, "upiIds", now_f.get("upiIds", []), current_turn)
     _add_evidence(evidence_map, "bankAccounts", now_f.get("bankAccounts", []), current_turn)
     _add_evidence(evidence_map, "ifscCodes", now_f.get("ifscCodes", []), current_turn)
-    _add_evidence(evidence_map, "phishingLinks", now_f.get("phishingLinks", []), current_turn, confidence_override=links_conf)
+    _add_evidence(
+        evidence_map,
+        "phishingLinks",
+        now_f.get("phishingLinks", []),
+        current_turn,
+        confidence_override=links_conf
+    )
     _add_evidence(evidence_map, "phoneNumbers", now_f.get("phoneNumbers", []), current_turn)
     _add_evidence(evidence_map, "emailIds", now_f.get("emailIds", []), current_turn)
 
@@ -189,6 +195,14 @@ def root():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# ✅ NEW: GET /honeypot for Endpoint Tester compatibility (prevents 405)
+@app.get("/honeypot")
+def honeypot_get(x_api_key: str = Header(None)):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return {"ok": True, "message": "Honeypot endpoint reachable"}
 
 
 @app.post("/honeypot")
