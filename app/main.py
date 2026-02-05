@@ -3,7 +3,9 @@ import time
 import hashlib
 from typing import Dict, Any, List, Optional
 
+import requests
 from fastapi import FastAPI, Header, HTTPException
+
 from app.schemas import IncomingMessage
 from app.detector import detect_scam
 from app.extractor import extract_features
@@ -13,6 +15,12 @@ app = FastAPI(title="Agentic Honeypot API")
 
 # ✅ API KEY: ENV first, fallback local
 API_KEY = os.getenv("HONEYPOT_API_KEY", "Honeypot2026@Krushna")
+
+# ✅ GUVI callback endpoint (mandatory)
+GUVI_CALLBACK_URL = os.getenv(
+    "GUVI_CALLBACK_URL",
+    "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
+)
 
 # -----------------------------
 # Simple in-memory session store
@@ -76,7 +84,7 @@ def _finalize_evidence(store: Dict[str, Dict[str, Any]]) -> Dict[str, List[Dict[
     return out
 
 
-# ✅ CHANGED: supports dict history + pydantic history safely
+# ✅ supports dict history + pydantic history safely
 def _get_text_from_msg(msg: Any) -> str:
     """
     Supports:
@@ -94,7 +102,7 @@ def aggregate_evidence_from_history(history, current_text: str):
     # history
     for i, msg in enumerate(history or []):
         turn = i + 1
-        f = extract_features(_get_text_from_msg(msg))  # ✅ CHANGED
+        f = extract_features(_get_text_from_msg(msg))
 
         _add_evidence(evidence_map, "upiIds", f.get("upiIds", []), turn)
         _add_evidence(evidence_map, "bankAccounts", f.get("bankAccounts", []), turn)
@@ -128,7 +136,7 @@ def aggregate_evidence_from_history(history, current_text: str):
     has_qr = False
     has_pay = False
     for msg in history or []:
-        f = extract_features(_get_text_from_msg(msg))  # ✅ CHANGED
+        f = extract_features(_get_text_from_msg(msg))
         has_qr = has_qr or bool(f.get("hasQRIntent", False))
         has_pay = has_pay or bool(f.get("hasPaymentIntent", False))
 
@@ -187,6 +195,75 @@ def compute_threat_cluster_id(final_intel: Dict[str, Any]) -> Optional[str]:
     return "cluster_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
+# -----------------------------
+# ✅ GUVI CALLBACK HELPERS
+# -----------------------------
+def _flatten_evidence_values(items: Any) -> List[str]:
+    """
+    Converts evidence lists into plain list[str] for GUVI payload.
+    Supports:
+      - [{"value": "...", ...}, ...]
+      - ["...", ...]
+    """
+    if not items:
+        return []
+    out: List[str] = []
+    if isinstance(items, list):
+        for x in items:
+            if isinstance(x, str):
+                out.append(x)
+            elif isinstance(x, dict) and "value" in x:
+                out.append(str(x["value"]))
+    # unique + keep order
+    return list(dict.fromkeys([v for v in out if v and str(v).strip()]))
+
+
+def _has_any_actionable_intel(final_intel: Dict[str, Any]) -> bool:
+    if not final_intel:
+        return False
+    keys = ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "emailIds", "ifscCodes"]
+    for k in keys:
+        if _flatten_evidence_values(final_intel.get(k)):
+            return True
+    return False
+
+
+def _build_guvi_payload(
+    session_id: str,
+    scam_detected: bool,
+    total_messages: int,
+    final_intel: Dict[str, Any],
+    suspicious_keywords: List[str],
+    agent_notes: str
+) -> Dict[str, Any]:
+    return {
+        "sessionId": session_id,
+        "scamDetected": bool(scam_detected),
+        "totalMessagesExchanged": int(total_messages),
+        "extractedIntelligence": {
+            "bankAccounts": _flatten_evidence_values(final_intel.get("bankAccounts")),
+            "upiIds": _flatten_evidence_values(final_intel.get("upiIds")),
+            "phishingLinks": _flatten_evidence_values(final_intel.get("phishingLinks")),
+            "phoneNumbers": _flatten_evidence_values(final_intel.get("phoneNumbers")),
+            "suspiciousKeywords": list(dict.fromkeys([k for k in (suspicious_keywords or []) if k]))
+        },
+        "agentNotes": agent_notes
+    }
+
+
+def _send_guvi_callback(payload: Dict[str, Any], timeout_sec: int = 6) -> Dict[str, Any]:
+    """
+    Returns:
+      {"ok": True/False, "status_code": int|None, "error": str|None}
+    """
+    try:
+        resp = requests.post(GUVI_CALLBACK_URL, json=payload, timeout=timeout_sec)
+        ok = 200 <= resp.status_code < 300
+        return {"ok": ok, "status_code": resp.status_code, "error": None if ok else resp.text[:300]}
+    except Exception as e:
+        return {"ok": False, "status_code": None, "error": str(e)[:300]}
+
+
 @app.get("/")
 def root():
     return {"status": "Agentic Honeypot API is running"}
@@ -197,7 +274,7 @@ def health():
     return {"ok": True}
 
 
-# ✅ NEW: GET /honeypot for Endpoint Tester compatibility (prevents 405)
+# ✅ GET /honeypot for Endpoint Tester compatibility (prevents 405)
 @app.get("/honeypot")
 def honeypot_get(x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
@@ -216,32 +293,35 @@ def receive_message(
     session_id = data.sessionId
     now = time.time()
 
-    # ✅ CHANGED: server-side history + stable cluster cache
+    # server-side store
     if session_id not in SESSION_STORE:
         SESSION_STORE[session_id] = {
             "startedAt": now,
             "lastSeenAt": now,
             "turns": 0,
-            "history": [],               # ✅ CHANGED
-            "threatClusterId": None       # ✅ CHANGED
+            "history": [],
+            "threatClusterId": None,
+            # ✅ callback state
+            "callbackSent": False,
+            "callbackResult": None,
+            "callbackSentAt": None
         }
     else:
         SESSION_STORE[session_id]["lastSeenAt"] = now
 
-    # ✅ CHANGED: use server history (NOT client conversationHistory)
     server_history = SESSION_STORE[session_id]["history"]
 
-    # ✅ CHANGED: true turn index derived from server history
+    # true turn index from server history
     current_turn = len(server_history) + 1
     SESSION_STORE[session_id]["turns"] = current_turn
 
-    # 1) detection (rule engine) using SERVER history
-    detection = detect_scam(data.message.text, server_history)  # ✅ CHANGED
+    # detection uses SERVER history
+    detection = detect_scam(data.message.text, server_history)
 
-    # 2) cumulative evidence using SERVER history
-    final_intel = aggregate_evidence_from_history(server_history, data.message.text)  # ✅ CHANGED
+    # cumulative evidence uses SERVER history
+    final_intel = aggregate_evidence_from_history(server_history, data.message.text)
 
-    # ✅ CHANGED: stable cluster id set once; if None earlier, set when available
+    # stable cluster id set once
     existing_cluster_id = SESSION_STORE[session_id].get("threatClusterId")
     computed_cluster_id = compute_threat_cluster_id(final_intel)
 
@@ -250,14 +330,14 @@ def receive_message(
 
     stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
-    # 3) agent
+    # agent
     agent_result = agent_decision(
         detection,
-        conversation_history=server_history,        # ✅ CHANGED
+        conversation_history=server_history,
         extracted_intelligence=final_intel
     )
 
-    # ✅ CHANGED: append message AFTER processing (keeps current_turn correct)
+    # append message AFTER processing
     server_history.append({
         "sender": data.message.sender,
         "text": data.message.text,
@@ -265,7 +345,61 @@ def receive_message(
     })
 
     duration_sec = int(now - SESSION_STORE[session_id]["startedAt"])
-    conversation_turns = current_turn  # ✅ CHANGED (no drift)
+    conversation_turns = current_turn
+    total_messages_exchanged = current_turn  # server-based count
+
+    # -----------------------------
+    # ✅ GUVI CALLBACK (mandatory)
+    # When to send:
+    # - scamDetected True
+    # - AND NOT already sent
+    # - AND (finalize flag OR (has intel and >=2 turns) OR >=6 turns)
+    # -----------------------------
+    metadata = data.metadata or {}
+    finalize_flag = bool(
+        metadata.get("finalize") or
+        metadata.get("isFinal") or
+        metadata.get("endConversation") or
+        metadata.get("conversationEnded")
+    )
+
+    has_intel = _has_any_actionable_intel(final_intel)
+    should_send_callback = (
+        detection.get("scamDetected", False)
+        and not SESSION_STORE[session_id].get("callbackSent", False)
+        and (
+            finalize_flag
+            or (has_intel and conversation_turns >= 2)
+            or (conversation_turns >= 6)
+        )
+    )
+
+    callback_status = None
+    if should_send_callback:
+        suspicious_keywords = (detection.get("indicators", {}) or {}).get("keywords", []) or []
+        agent_notes = (
+            f"Stage={detection.get('scamStage')} Type={detection.get('scamType')}. "
+            f"AgentMode={agent_result.get('agentMode')} Action={agent_result.get('action')}. "
+            f"CollectedIntel={('yes' if has_intel else 'no')}."
+        )
+
+        payload = _build_guvi_payload(
+            session_id=session_id,
+            scam_detected=True,
+            total_messages=total_messages_exchanged,
+            final_intel=final_intel,
+            suspicious_keywords=suspicious_keywords,
+            agent_notes=agent_notes
+        )
+
+        callback_status = _send_guvi_callback(payload)
+        SESSION_STORE[session_id]["callbackSent"] = bool(callback_status.get("ok"))
+        SESSION_STORE[session_id]["callbackResult"] = callback_status
+        SESSION_STORE[session_id]["callbackSentAt"] = int(time.time())
+
+    # If already sent earlier, surface the last result (optional but helpful)
+    if callback_status is None and SESSION_STORE[session_id].get("callbackResult"):
+        callback_status = SESSION_STORE[session_id]["callbackResult"]
 
     return {
         "sessionId": data.sessionId,
@@ -277,7 +411,6 @@ def receive_message(
             "scamType": detection["scamType"]
         },
 
-        # ✅ stable across turns (best for judges)
         "threatClusterId": stable_cluster_id,
 
         "agentStatus": {
@@ -296,5 +429,8 @@ def receive_message(
             "engagementDurationSeconds": duration_sec
         },
 
-        "extractedIntelligence": final_intel
+        "extractedIntelligence": final_intel,
+
+        # ✅ Optional: shows whether callback was sent
+        "guviCallback": callback_status
     }
