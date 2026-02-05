@@ -256,7 +256,6 @@ def _send_guvi_callback(payload: Dict[str, Any], timeout_sec: int = 6) -> Dict[s
       {"ok": True/False, "status_code": int|None, "error": str|None}
     """
     try:
-        # ✅ LOGS for confirmation on Render
         print(f"[GUVI] Sending callback to {GUVI_CALLBACK_URL} | sessionId={payload.get('sessionId')}")
         resp = requests.post(GUVI_CALLBACK_URL, json=payload, timeout=timeout_sec)
         print(f"[GUVI] Response status={resp.status_code} body={resp.text[:200]}")
@@ -278,7 +277,6 @@ def health():
     return {"ok": True}
 
 
-# ✅ GET /honeypot for Endpoint Tester compatibility (prevents 405)
 @app.get("/honeypot")
 def honeypot_get(x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
@@ -308,12 +306,15 @@ def receive_message(
             # callback state
             "callbackSent": False,
             "callbackResult": None,
-            "callbackSentAt": None
+            "callbackSentAt": None,
+            # reply memory (avoid repeats)
+            "lastAgentReply": None
         }
     else:
         SESSION_STORE[session_id]["lastSeenAt"] = now
 
     server_history = SESSION_STORE[session_id]["history"]
+    last_agent_reply = SESSION_STORE[session_id].get("lastAgentReply")
 
     # true turn index from server history
     current_turn = len(server_history) + 1
@@ -332,12 +333,13 @@ def receive_message(
         SESSION_STORE[session_id]["threatClusterId"] = computed_cluster_id
     stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
-    # agent ✅ pass session_id for deterministic reply + stage-safe routing
+    # agent ✅ pass session_id + last_agent_reply to avoid repeats
     agent_result = agent_decision(
         detection,
         conversation_history=server_history,
         extracted_intelligence=final_intel,
-        session_id=session_id
+        session_id=session_id,
+        last_agent_reply=last_agent_reply
     )
 
     # append message AFTER processing
@@ -347,9 +349,15 @@ def receive_message(
         "timestamp": data.message.timestamp.isoformat() if hasattr(data.message.timestamp, "isoformat") else str(data.message.timestamp)
     })
 
-    duration_sec = int(now - SESSION_STORE[session_id]["startedAt"])
     conversation_turns = current_turn
-    total_messages_exchanged = current_turn  # server-based count
+
+    # better estimate: scammer msgs = turns, honeypot replies = turns
+    total_messages_exchanged = conversation_turns * 2
+
+    # store last reply for next turn (avoid repeats)
+    reply_text = agent_result.get("agentReply")
+    if reply_text:
+        SESSION_STORE[session_id]["lastAgentReply"] = reply_text
 
     # -----------------------------
     # ✅ GUVI CALLBACK (mandatory)
@@ -363,12 +371,14 @@ def receive_message(
     )
 
     has_intel = _has_any_actionable_intel(final_intel)
+
+    # ✅ FIX: no early callback at turn 2
     should_send_callback = (
         detection.get("scamDetected", False)
         and not SESSION_STORE[session_id].get("callbackSent", False)
         and (
             finalize_flag
-            or (has_intel and conversation_turns >= 2)
+            or (has_intel and conversation_turns >= 4)
             or (conversation_turns >= 6)
         )
     )
@@ -405,10 +415,6 @@ def receive_message(
     # ✅ FINAL FIX FOR GUVI TESTER:
     # Return ONLY the minimal expected response format.
     # ---------------------------------------------------------
-    # Better fallback:
-    # - benign => helpful benign reply (agent_decision already returns it)
-    # - scam => safe default if somehow missing
-    reply_text = agent_result.get("agentReply")
     if not reply_text:
         if detection.get("scamDetected", False):
             reply_text = "Why is my account being suspended?"

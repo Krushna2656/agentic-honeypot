@@ -24,13 +24,19 @@ def _make_rng(session_id: Optional[str], mode: str, stage: str, turn_index: int)
     """
     key = f"{session_id or 'no_session'}|{mode}|{stage}|{turn_index}"
     h = hashlib.sha256(key.encode("utf-8")).hexdigest()
-    seed_int = int(h[:16], 16)  # enough bits
+    seed_int = int(h[:16], 16)
     return random.Random(seed_int)
 
 
-def _pick(options: List[str], rng: Optional[random.Random] = None) -> str:
+def _pick(options: List[str], rng: Optional[random.Random] = None, avoid_text: Optional[str] = None) -> str:
     if not options:
         return ""
+
+    if avoid_text and len(options) > 1:
+        filtered = [x for x in options if x != avoid_text]
+        if filtered:
+            options = filtered
+
     if rng is None:
         return random.choice(options)
     return rng.choice(options)
@@ -93,7 +99,8 @@ def generate_reply(
     scam_type: Optional[str] = None,
     extracted: Optional[Dict[str, Any]] = None,
     session_id: Optional[str] = None,
-    turn_index: int = 1
+    turn_index: int = 1,
+    last_agent_reply: Optional[str] = None
 ) -> Dict[str, str]:
     stage = (stage or "UNKNOWN").upper()
     scam_type = (scam_type or "UNKNOWN").upper()
@@ -145,7 +152,6 @@ def generate_reply(
         "I see multiple buttons (Continue/Verify/Proceed). Kaunsa select karu?"
     ]
 
-    # When phishing starts blending into payment flow
     phishing_payment_followup = [
         "UPI me receiver name kya dikh raha hai? I want to confirm before paying.",
         "Payment fail ho gaya to kya bank transfer karna hai? Account + IFSC bhej do.",
@@ -212,7 +218,6 @@ def generate_reply(
 
     # -----------------------------
     # ✅ OTP FRAUD — 12–15 unique replies + turn progression
-    # Keep it OTP-only (no sharing), but gather intel: sender, sms text, purpose, channel, alt verification
     # -----------------------------
     otp_sender_bucket = [
         "Message me sender name kya dikh raha hai? Main confirm karna chahta hoon.",
@@ -248,19 +253,17 @@ def generate_reply(
         "OTP me kisi merchant ka naam dikh raha? Agar haan to kaunsa?"
     ]
 
-    # Pick OTP reply bucket by turn (progression)
     def _otp_progressive_reply(ti: int) -> str:
         if ti <= 1:
-            return _pick(otp_sender_bucket, rng)
+            return _pick(otp_sender_bucket, rng, avoid_text=last_agent_reply)
         if ti == 2:
-            return _pick(otp_sms_text_bucket, rng)
+            return _pick(otp_sms_text_bucket, rng, avoid_text=last_agent_reply)
         if ti == 3:
-            return _pick(otp_purpose_bucket, rng)
+            return _pick(otp_purpose_bucket, rng, avoid_text=last_agent_reply)
         if ti >= 4:
-            # rotate between purpose and safe alternatives to keep convo alive
             buckets = otp_safe_alt_bucket + otp_purpose_bucket + otp_followup_fallback
-            return _pick(buckets, rng)
-        return _pick(otp_followup_fallback, rng)
+            return _pick(buckets, rng, avoid_text=last_agent_reply)
+        return _pick(otp_followup_fallback, rng, avoid_text=last_agent_reply)
 
     # -----------------------------
     # Stage prompts (expanded)
@@ -315,68 +318,57 @@ def generate_reply(
         ]
     }
 
-    base = _pick(stage_prompts.get(stage, stage_prompts["UNKNOWN"]), rng)
+    base = _pick(stage_prompts.get(stage, stage_prompts["UNKNOWN"]), rng, avoid_text=last_agent_reply)
 
     # -----------------------------
     # MODE: SOFT_ENGAGEMENT
     # -----------------------------
     if mode == "SOFT_ENGAGEMENT":
-        reply = _pick([base] + soft_openers, rng)
+        reply = _pick([base] + soft_openers, rng, avoid_text=last_agent_reply)
         return {"agentReply": reply, "agentGoal": "Keep scammer engaged and gather more signals without exposure."}
 
     # -----------------------------
     # MODE: INTELLIGENCE_EXTRACTION
-    # Stage-locking + safe routing
     # -----------------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # ✅ HARD LOCK: OTP stage must ask OTP-related questions only (progressive + 12–15+ variations)
         if stage == "OTP_FRAUD":
             return {
                 "agentReply": _otp_progressive_reply(turn_index),
                 "agentGoal": "Keep OTP fraud engagement realistic without sharing OTP; gather sender/SMS text/purpose and alternative verification."
             }
 
-        # ✅ HARD LOCK: if bank/IFSC already present, do NOT downgrade to UPI-only
         if gaps["has_bank"] or gaps["has_ifsc"]:
             if gaps["need_ifsc"] and (not gaps["need_bank"]):
-                return {"agentReply": _pick(ask_ifsc_only, rng), "agentGoal": "Extract missing IFSC to complete bank intelligence."}
-            return {"agentReply": _pick(bank_confirm, rng), "agentGoal": "Confirm beneficiary/bank details to strengthen bank intelligence and keep scammer engaged."}
+                return {"agentReply": _pick(ask_ifsc_only, rng, avoid_text=last_agent_reply), "agentGoal": "Extract missing IFSC to complete bank intelligence."}
+            return {"agentReply": _pick(bank_confirm, rng, avoid_text=last_agent_reply), "agentGoal": "Confirm beneficiary/bank details to strengthen bank intelligence and keep scammer engaged."}
 
-        # ✅ PHISHING path
         if stage == "PHISHING":
             if gaps["need_link"]:
-                return {"agentReply": _pick(ask_link, rng), "agentGoal": "Extract phishing URL for reporting."}
+                return {"agentReply": _pick(ask_link, rng, avoid_text=last_agent_reply), "agentGoal": "Extract phishing URL for reporting."}
 
-            # If payment intent already present, move to receiver/bank confirmation
             if gaps["has_upi"] or has_payment_intent:
-                return {"agentReply": _pick(phishing_payment_followup, rng), "agentGoal": "Continue extraction by moving phishing into payment flow (receiver/bank details)."}
+                return {"agentReply": _pick(phishing_payment_followup, rng, avoid_text=last_agent_reply), "agentGoal": "Continue extraction by moving phishing into payment flow (receiver/bank details)."}
 
-            return {"agentReply": _pick(phishing_followup, rng), "agentGoal": "Keep phishing engagement realistic and gather next-step instructions."}
+            return {"agentReply": _pick(phishing_followup, rng, avoid_text=last_agent_reply), "agentGoal": "Keep phishing engagement realistic and gather next-step instructions."}
 
-        # If social/urgency and link missing, ask link
         if gaps["need_link"] and stage in ["SOCIAL_ENGINEERING", "URGENCY"]:
-            return {"agentReply": _pick(ask_link, rng), "agentGoal": "Extract phishing URL for reporting."}
+            return {"agentReply": _pick(ask_link, rng, avoid_text=last_agent_reply), "agentGoal": "Extract phishing URL for reporting."}
 
-        # ✅ UPI / payment
         if gaps["has_upi"]:
-            return {"agentReply": _pick(ask_receiver_or_collect, rng), "agentGoal": "Confirm receiver name / collect / alternate UPI to extend extraction."}
+            return {"agentReply": _pick(ask_receiver_or_collect, rng, avoid_text=last_agent_reply), "agentGoal": "Confirm receiver name / collect / alternate UPI to extend extraction."}
 
-        # If payment request but no UPI yet, ask UPI
         if gaps["need_upi"] and (has_payment_intent or stage == "PAYMENT_REQUEST"):
-            return {"agentReply": _pick(ask_upi, rng), "agentGoal": "Extract UPI ID / receiver handle."}
+            return {"agentReply": _pick(ask_upi, rng, avoid_text=last_agent_reply), "agentGoal": "Extract UPI ID / receiver handle."}
 
-        # If QR intent and UPI exists, continue collect/receiver flow
         if has_qr_intent and (not gaps["need_upi"]):
-            return {"agentReply": _pick(ask_receiver_or_collect, rng), "agentGoal": "Extend conversation using QR/collect flow."}
+            return {"agentReply": _pick(ask_receiver_or_collect, rng, avoid_text=last_agent_reply), "agentGoal": "Extend conversation using QR/collect flow."}
 
-        # If we still need bank details, ask bank
         if gaps["need_bank"]:
-            return {"agentReply": _pick(ask_bank, rng), "agentGoal": "Extract bank account details."}
+            return {"agentReply": _pick(ask_bank, rng, avoid_text=last_agent_reply), "agentGoal": "Extract bank account details."}
 
-        # Contact details at the end
         if gaps["need_phone"] or gaps["need_email"]:
-            return {"agentReply": _pick(ask_contact_details, rng), "agentGoal": "Extract contact details for intelligence."}
+            return {"agentReply": _pick(ask_contact_details, rng, avoid_text=last_agent_reply), "agentGoal": "Extract contact details for intelligence."}
 
         followups = [
             "Okay, I noted that. What’s the next step?",
@@ -384,7 +376,7 @@ def generate_reply(
             "Can you confirm receiver name once more?",
             "Agar ye step ho gaya, next verification kya hoga?"
         ]
-        return {"agentReply": _pick(followups, rng), "agentGoal": "Keep conversation alive for more evidence."}
+        return {"agentReply": _pick(followups, rng, avoid_text=last_agent_reply), "agentGoal": "Keep conversation alive for more evidence."}
 
     return {"agentReply": None, "agentGoal": "No action needed."}
 
@@ -393,13 +385,13 @@ def agent_decision(
     analysis: dict,
     conversation_history: Optional[list] = None,
     extracted_intelligence: Optional[dict] = None,
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    last_agent_reply: Optional[str] = None
 ) -> Dict[str, Any]:
 
     extracted_intelligence = extracted_intelligence or {}
     conversation_history = conversation_history or []
 
-    # turn_index = how many messages so far + 1 (stable)
     turn_index = max(1, len(conversation_history) + 1)
 
     if not analysis.get("scamDetected", False):
@@ -417,7 +409,7 @@ def agent_decision(
             "action": "ALLOW",
             "agentMode": "PASSIVE",
             "message": "No scam indicators detected",
-            "agentReply": _pick(benign_help, benign_rng),
+            "agentReply": _pick(benign_help, benign_rng, avoid_text=last_agent_reply),
             "agentGoal": "Help user safely (benign).",
             "persona": PERSONA["style"]
         }
@@ -436,7 +428,7 @@ def agent_decision(
     if score >= 0.8:
         reply_pack = generate_reply(
             "INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence,
-            session_id=session_id, turn_index=turn_index
+            session_id=session_id, turn_index=turn_index, last_agent_reply=last_agent_reply
         )
         return {
             "activated": True,
@@ -452,7 +444,7 @@ def agent_decision(
     if score >= 0.5 and evidence_lock:
         reply_pack = generate_reply(
             "INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence,
-            session_id=session_id, turn_index=turn_index
+            session_id=session_id, turn_index=turn_index, last_agent_reply=last_agent_reply
         )
         return {
             "activated": True,
@@ -468,7 +460,7 @@ def agent_decision(
     if score >= 0.5:
         reply_pack = generate_reply(
             "SOFT_ENGAGEMENT", stage, scam_type, extracted_intelligence,
-            session_id=session_id, turn_index=turn_index
+            session_id=session_id, turn_index=turn_index, last_agent_reply=last_agent_reply
         )
         return {
             "activated": True,
