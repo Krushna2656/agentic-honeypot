@@ -307,14 +307,13 @@ def receive_message(
             "callbackSent": False,
             "callbackResult": None,
             "callbackSentAt": None,
-            # reply memory (avoid repeats)
+            # reply memory (optional)
             "lastAgentReply": None
         }
     else:
         SESSION_STORE[session_id]["lastSeenAt"] = now
 
     server_history = SESSION_STORE[session_id]["history"]
-    last_agent_reply = SESSION_STORE[session_id].get("lastAgentReply")
 
     # true turn index from server history
     current_turn = len(server_history) + 1
@@ -333,20 +332,21 @@ def receive_message(
         SESSION_STORE[session_id]["threatClusterId"] = computed_cluster_id
     stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
-    # agent ✅ pass session_id + last_agent_reply to avoid repeats
+    # ✅ IMPORTANT: DO NOT pass unsupported args to agent_decision
     agent_result = agent_decision(
         detection,
         conversation_history=server_history,
         extracted_intelligence=final_intel,
-        session_id=session_id,
-        last_agent_reply=last_agent_reply
+        session_id=session_id
     )
 
     # append message AFTER processing
     server_history.append({
         "sender": data.message.sender,
         "text": data.message.text,
-        "timestamp": data.message.timestamp.isoformat() if hasattr(data.message.timestamp, "isoformat") else str(data.message.timestamp)
+        "timestamp": data.message.timestamp.isoformat()
+        if hasattr(data.message.timestamp, "isoformat")
+        else str(data.message.timestamp)
     })
 
     conversation_turns = current_turn
@@ -354,7 +354,7 @@ def receive_message(
     # better estimate: scammer msgs = turns, honeypot replies = turns
     total_messages_exchanged = conversation_turns * 2
 
-    # store last reply for next turn (avoid repeats)
+    # store last reply for next turn (optional)
     reply_text = agent_result.get("agentReply")
     if reply_text:
         SESSION_STORE[session_id]["lastAgentReply"] = reply_text
@@ -372,7 +372,7 @@ def receive_message(
 
     has_intel = _has_any_actionable_intel(final_intel)
 
-    # ✅ FIX: no early callback at turn 2
+    # ✅ no early callback at turn 2
     should_send_callback = (
         detection.get("scamDetected", False)
         and not SESSION_STORE[session_id].get("callbackSent", False)
@@ -407,13 +407,8 @@ def receive_message(
         SESSION_STORE[session_id]["callbackResult"] = callback_status
         SESSION_STORE[session_id]["callbackSentAt"] = int(time.time())
 
-    # If already sent earlier, surface the last result (optional)
-    if callback_status is None and SESSION_STORE[session_id].get("callbackResult"):
-        callback_status = SESSION_STORE[session_id]["callbackResult"]
-
     # ---------------------------------------------------------
-    # ✅ FINAL FIX FOR GUVI TESTER:
-    # Return ONLY the minimal expected response format.
+    # ✅ Final response format for GUVI tester
     # ---------------------------------------------------------
     if not reply_text:
         if detection.get("scamDetected", False):
