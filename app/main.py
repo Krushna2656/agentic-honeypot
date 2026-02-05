@@ -13,31 +13,20 @@ from app.agent import agent_decision
 
 app = FastAPI(title="Agentic Honeypot API")
 
-# ✅ API KEY: ENV first, fallback local
 API_KEY = os.getenv("HONEYPOT_API_KEY", "Honeypot2026@Krushna")
 
-# ✅ GUVI callback endpoint (mandatory)
 GUVI_CALLBACK_URL = os.getenv(
     "GUVI_CALLBACK_URL",
     "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 )
 
-# -----------------------------
-# Simple in-memory session store
-# -----------------------------
 SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 
 
-# -----------------------------
-# Helpers: Unique merge
-# -----------------------------
 def merge_unique(a, b):
     return list(dict.fromkeys((a or []) + (b or [])))
 
 
-# -----------------------------
-# Evidence helpers: confidence + sourceTurn
-# -----------------------------
 def _base_confidence(field: str) -> float:
     return {
         "upiIds": 0.92,
@@ -84,13 +73,7 @@ def _finalize_evidence(store: Dict[str, Dict[str, Any]]) -> Dict[str, List[Dict[
     return out
 
 
-# ✅ supports dict history + pydantic history safely
 def _get_text_from_msg(msg: Any) -> str:
-    """
-    Supports:
-      - dict: {"text": "..."}
-      - pydantic: msg.text
-    """
     if isinstance(msg, dict):
         return msg.get("text", "") or ""
     return getattr(msg, "text", "") or ""
@@ -99,7 +82,6 @@ def _get_text_from_msg(msg: Any) -> str:
 def aggregate_evidence_from_history(history, current_text: str):
     evidence_map: Dict[str, Dict[str, Any]] = {}
 
-    # history
     for i, msg in enumerate(history or []):
         turn = i + 1
         f = extract_features(_get_text_from_msg(msg))
@@ -111,7 +93,6 @@ def aggregate_evidence_from_history(history, current_text: str):
         _add_evidence(evidence_map, "phoneNumbers", f.get("phoneNumbers", []), turn)
         _add_evidence(evidence_map, "emailIds", f.get("emailIds", []), turn)
 
-    # current message
     current_turn = (len(history or []) + 1)
     now_f = extract_features(current_text)
 
@@ -132,7 +113,6 @@ def aggregate_evidence_from_history(history, current_text: str):
     _add_evidence(evidence_map, "phoneNumbers", now_f.get("phoneNumbers", []), current_turn)
     _add_evidence(evidence_map, "emailIds", now_f.get("emailIds", []), current_turn)
 
-    # behavioral signals (simple OR)
     has_qr = False
     has_pay = False
     for msg in history or []:
@@ -150,16 +130,7 @@ def aggregate_evidence_from_history(history, current_text: str):
     return evidence
 
 
-# -----------------------------
-# ✅ Stable threatClusterId from cumulative evidence
-# -----------------------------
 def _values_from_evidence(items: Any) -> List[str]:
-    """
-    Accepts:
-      - [{"value": "...", ...}, ...]
-      - ["...", ...]
-    Returns list[str]
-    """
     if not items:
         return []
     out: List[str] = []
@@ -173,9 +144,6 @@ def _values_from_evidence(items: Any) -> List[str]:
 
 
 def compute_threat_cluster_id(final_intel: Dict[str, Any]) -> Optional[str]:
-    """
-    Stable across turns: uses cumulative evidence, not just current message.
-    """
     if not final_intel:
         return None
 
@@ -195,16 +163,7 @@ def compute_threat_cluster_id(final_intel: Dict[str, Any]) -> Optional[str]:
     return "cluster_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
-# -----------------------------
-# ✅ GUVI CALLBACK HELPERS
-# -----------------------------
 def _flatten_evidence_values(items: Any) -> List[str]:
-    """
-    Converts evidence lists into plain list[str] for GUVI payload.
-    Supports:
-      - [{"value": "...", ...}, ...]
-      - ["...", ...]
-    """
     if not items:
         return []
     out: List[str] = []
@@ -251,15 +210,10 @@ def _build_guvi_payload(
 
 
 def _send_guvi_callback(payload: Dict[str, Any], timeout_sec: int = 6) -> Dict[str, Any]:
-    """
-    Returns:
-      {"ok": True/False, "status_code": int|None, "error": str|None}
-    """
     try:
         print(f"[GUVI] Sending callback to {GUVI_CALLBACK_URL} | sessionId={payload.get('sessionId')}")
         resp = requests.post(GUVI_CALLBACK_URL, json=payload, timeout=timeout_sec)
         print(f"[GUVI] Response status={resp.status_code} body={resp.text[:200]}")
-
         ok = 200 <= resp.status_code < 300
         return {"ok": ok, "status_code": resp.status_code, "error": None if ok else resp.text[:300]}
     except Exception as e:
@@ -295,7 +249,6 @@ def receive_message(
     session_id = data.sessionId
     now = time.time()
 
-    # server-side store
     if session_id not in SESSION_STORE:
         SESSION_STORE[session_id] = {
             "startedAt": now,
@@ -303,44 +256,37 @@ def receive_message(
             "turns": 0,
             "history": [],
             "threatClusterId": None,
-            # callback state
             "callbackSent": False,
             "callbackResult": None,
             "callbackSentAt": None,
-            # reply memory (optional)
-            "lastAgentReply": None
+            "lastAgentReply": None,
         }
     else:
         SESSION_STORE[session_id]["lastSeenAt"] = now
 
     server_history = SESSION_STORE[session_id]["history"]
+    last_agent_reply = SESSION_STORE[session_id].get("lastAgentReply")
 
-    # true turn index from server history
     current_turn = len(server_history) + 1
     SESSION_STORE[session_id]["turns"] = current_turn
 
-    # detection uses SERVER history
     detection = detect_scam(data.message.text, server_history)
-
-    # cumulative evidence uses SERVER history
     final_intel = aggregate_evidence_from_history(server_history, data.message.text)
 
-    # stable cluster id set once
     existing_cluster_id = SESSION_STORE[session_id].get("threatClusterId")
     computed_cluster_id = compute_threat_cluster_id(final_intel)
     if existing_cluster_id is None and computed_cluster_id is not None:
         SESSION_STORE[session_id]["threatClusterId"] = computed_cluster_id
     stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
-    # ✅ IMPORTANT: DO NOT pass unsupported args to agent_decision
     agent_result = agent_decision(
         detection,
         conversation_history=server_history,
         extracted_intelligence=final_intel,
-        session_id=session_id
+        session_id=session_id,
+        last_agent_reply=last_agent_reply  # ✅ now supported (agent.py updated)
     )
 
-    # append message AFTER processing
     server_history.append({
         "sender": data.message.sender,
         "text": data.message.text,
@@ -350,18 +296,12 @@ def receive_message(
     })
 
     conversation_turns = current_turn
-
-    # better estimate: scammer msgs = turns, honeypot replies = turns
     total_messages_exchanged = conversation_turns * 2
 
-    # store last reply for next turn (optional)
     reply_text = agent_result.get("agentReply")
     if reply_text:
         SESSION_STORE[session_id]["lastAgentReply"] = reply_text
 
-    # -----------------------------
-    # ✅ GUVI CALLBACK (mandatory)
-    # -----------------------------
     metadata = data.metadata or {}
     finalize_flag = bool(
         metadata.get("finalize") or
@@ -372,7 +312,6 @@ def receive_message(
 
     has_intel = _has_any_actionable_intel(final_intel)
 
-    # ✅ no early callback at turn 2
     should_send_callback = (
         detection.get("scamDetected", False)
         and not SESSION_STORE[session_id].get("callbackSent", False)
@@ -383,7 +322,6 @@ def receive_message(
         )
     )
 
-    callback_status = None
     if should_send_callback:
         suspicious_keywords = (detection.get("indicators", {}) or {}).get("keywords", []) or []
         agent_notes = (
@@ -407,16 +345,10 @@ def receive_message(
         SESSION_STORE[session_id]["callbackResult"] = callback_status
         SESSION_STORE[session_id]["callbackSentAt"] = int(time.time())
 
-    # ---------------------------------------------------------
-    # ✅ Final response format for GUVI tester
-    # ---------------------------------------------------------
     if not reply_text:
         if detection.get("scamDetected", False):
             reply_text = "Why is my account being suspended?"
         else:
             reply_text = "Which app are you using (GPay/PhonePe/Paytm)? I’ll tell safe steps."
 
-    return {
-        "status": "success",
-        "reply": reply_text
-    }
+    return {"status": "success", "reply": reply_text}
