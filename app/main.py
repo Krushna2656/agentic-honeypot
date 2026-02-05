@@ -256,10 +256,15 @@ def _send_guvi_callback(payload: Dict[str, Any], timeout_sec: int = 6) -> Dict[s
       {"ok": True/False, "status_code": int|None, "error": str|None}
     """
     try:
+        # ✅ LOGS for confirmation on Render
+        print(f"[GUVI] Sending callback to {GUVI_CALLBACK_URL} | sessionId={payload.get('sessionId')}")
         resp = requests.post(GUVI_CALLBACK_URL, json=payload, timeout=timeout_sec)
+        print(f"[GUVI] Response status={resp.status_code} body={resp.text[:200]}")
+
         ok = 200 <= resp.status_code < 300
         return {"ok": ok, "status_code": resp.status_code, "error": None if ok else resp.text[:300]}
     except Exception as e:
+        print(f"[GUVI] ERROR: {str(e)[:200]}")
         return {"ok": False, "status_code": None, "error": str(e)[:300]}
 
 
