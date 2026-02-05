@@ -327,11 +327,12 @@ def receive_message(
         SESSION_STORE[session_id]["threatClusterId"] = computed_cluster_id
     stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
-    # agent
+    # agent ✅ pass session_id for deterministic reply + stage-safe routing
     agent_result = agent_decision(
         detection,
         conversation_history=server_history,
-        extracted_intelligence=final_intel
+        extracted_intelligence=final_intel,
+        session_id=session_id
     )
 
     # append message AFTER processing
@@ -373,7 +374,8 @@ def receive_message(
         agent_notes = (
             f"Stage={detection.get('scamStage')} Type={detection.get('scamType')}. "
             f"AgentMode={agent_result.get('agentMode')} Action={agent_result.get('action')}. "
-            f"CollectedIntel={('yes' if has_intel else 'no')}."
+            f"CollectedIntel={('yes' if has_intel else 'no')}. "
+            f"Cluster={stable_cluster_id or 'none'}"
         )
 
         payload = _build_guvi_payload(
@@ -398,7 +400,16 @@ def receive_message(
     # ✅ FINAL FIX FOR GUVI TESTER:
     # Return ONLY the minimal expected response format.
     # ---------------------------------------------------------
-    reply_text = agent_result.get("agentReply") or "Why is my account being suspended?"
+    # Better fallback:
+    # - benign => helpful benign reply (agent_decision already returns it)
+    # - scam => safe default if somehow missing
+    reply_text = agent_result.get("agentReply")
+    if not reply_text:
+        if detection.get("scamDetected", False):
+            reply_text = "Why is my account being suspended?"
+        else:
+            reply_text = "Which app are you using (GPay/PhonePe/Paytm)? I’ll tell safe steps."
+
     return {
         "status": "success",
         "reply": reply_text

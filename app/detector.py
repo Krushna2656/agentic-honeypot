@@ -39,7 +39,11 @@ SUSPICIOUS_URL_HINTS = ["kyc", "login", "verify", "secure", "update", "suspend",
 SHORTENER_HINTS = ["bit.ly", "tinyurl", "t.co", "cutt.ly", "rb.gy", "is.gd"]
 
 # Benign context (reduce false positives)
-BENIGN_CONTEXT = ["balance", "statement", "branch", "atm", "debit", "credit", "passbook", "upi pin"]
+BENIGN_CONTEXT = [
+    "balance", "statement", "branch", "atm", "debit", "credit", "passbook",
+    "upi pin", "pin reset", "reset pin", "forgot pin", "forgot upi pin",
+    "how to", "kaise", "kya", "help", "forgot", "reset"
+]
 
 # ✅ UPI Validation (PSP handles) - same spirit as extractor
 VALID_UPI_SUFFIXES = {
@@ -116,13 +120,14 @@ def _url_risk_score(urls: List[str]) -> float:
 def _benign_guard(text: str, keyword_hits: List[str], has_strong_signal: bool) -> float:
     """
     Reduce false positives:
-    If only weak signals exist and message looks like normal banking talk, reduce score.
+    If only weak signals exist and message looks like normal banking help talk, reduce score.
     """
     if has_strong_signal:
         return 0.0
 
-    if _contains_any(text, BENIGN_CONTEXT) and len(keyword_hits) <= 2:
-        return -0.20
+    # If message looks like "help/reset/forgot" type query, strongly reduce
+    if _contains_any(text, BENIGN_CONTEXT) and len(keyword_hits) <= 3:
+        return -0.30
 
     # Greetings-only
     if _contains_any(text, SCAM_KEYWORDS["RECON"]) and len(keyword_hits) <= 1:
@@ -230,7 +235,7 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
 
     # Pattern extraction (CURRENT)
     upi_candidates = re.findall(UPI_REGEX, message_text or "")
-    upi_ids = _filter_valid_upi(upi_candidates)  # ✅ important fix
+    upi_ids = _filter_valid_upi(upi_candidates)
 
     urls = re.findall(URL_REGEX, message_text or "")
     bank_accounts = re.findall(BANK_REGEX, message_text or "")
@@ -262,14 +267,11 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     )
 
     # -----------------------------
-    # Confidence Scoring (calibrated)
+    # Confidence Scoring
     # -----------------------------
     score = 0.0
-
-    # keyword base (small)
     score += len(keyword_hits) * 0.08
 
-    # strong indicators (CURRENT)
     if urls:
         score += 0.40
         score += _url_risk_score(urls)
@@ -281,9 +283,9 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
         score += 0.40
 
     if has_otp_current:
-        score += 0.60  # OTP = high risk
+        score += 0.60
 
-    # cumulative evidence booster so score doesn't drop
+    # cumulative evidence booster
     if (not urls) and has_url_any:
         score += 0.10
     if (not upi_ids) and has_upi_any:
@@ -293,7 +295,6 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     if (not has_otp_current) and has_otp_any:
         score += 0.12
 
-    # stage boosts
     stage_boost = {
         "SOCIAL_ENGINEERING": 0.15,
         "URGENCY": 0.15,
@@ -303,15 +304,12 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
         "OTP_FRAUD": 0.22
     }
     score += stage_boost.get(scam_stage, 0.0)
-
-    # multi-turn memory
     score += history_boost(hist)
 
-    # benign guard
     has_strong_signal = bool(urls or upi_ids or bank_accounts or ifsc_codes or has_otp_current)
     score += _benign_guard(text, keyword_hits, has_strong_signal)
 
-    # ✅ Prevent "refund/pay/transfer" words alone from crossing threshold
+    # Prevent payment words alone crossing threshold
     if not has_strong_signal and scam_stage == "PAYMENT_REQUEST":
         payment_keywords = SCAM_KEYWORDS.get("PAYMENT_REQUEST", [])
         payment_hit = any(pk in text for pk in payment_keywords)
@@ -321,9 +319,6 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
     score = max(0.0, min(score, 1.0))
     scam_detected = score >= 0.5
 
-    # -----------------------------
-    # normalize output for benign messages
-    # -----------------------------
     if not scam_detected:
         return {
             "scamDetected": False,
@@ -339,9 +334,6 @@ def detect_scam(message_text: str, history: list = None) -> Dict[str, Any]:
             }
         }
 
-    # -----------------------------
-    # Scam type: ONLY if detected (uses cumulative flags)
-    # -----------------------------
     scam_type = None
     if has_url_any:
         scam_type = "PHISHING"
