@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
+from pydantic.config import ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 
@@ -29,18 +30,22 @@ class Message(BaseModel):
 
         # already datetime
         if isinstance(v, datetime):
+            # if naive, attach UTC to be safe
+            if v.tzinfo is None:
+                return v.replace(tzinfo=timezone.utc)
             return v
 
         # epoch numeric
         if isinstance(v, (int, float)):
             # if it's ms (very large)
-            if v > 10_000_000_000:  # > year 2286 in seconds, so treat as ms safely
+            if v > 10_000_000_000:
                 return datetime.fromtimestamp(v / 1000.0, tz=timezone.utc)
             return datetime.fromtimestamp(v, tz=timezone.utc)
 
         # string
         if isinstance(v, str):
             s = v.strip()
+
             # numeric string epoch
             if s.isdigit():
                 n = int(s)
@@ -50,8 +55,9 @@ class Message(BaseModel):
 
             # ISO string
             try:
-                # Python accepts many ISO formats
                 dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 return dt
             except Exception:
                 raise ValueError("Invalid timestamp format. Use epoch ms or ISO datetime.")
@@ -60,14 +66,14 @@ class Message(BaseModel):
 
 
 class IncomingMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     sessionId: str = Field(..., example="abc123")
     message: Message
-    conversationHistory: List[Message] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    # ✅ allow "history" alias too
-    class Config:
-        allow_population_by_field_name = True
-        fields = {
-            "conversationHistory": {"alias": "history"}
-        }
+    # ✅ Accepts both keys:
+    # - "conversationHistory": [...]
+    # - "history": [...]
+    conversationHistory: List[Message] = Field(default_factory=list, alias="history")
+
+    metadata: Dict[str, Any] = Field(default_factory=dict)

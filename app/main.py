@@ -214,7 +214,6 @@ def _flatten_evidence_values(items: Any) -> List[str]:
                 out.append(x)
             elif isinstance(x, dict) and "value" in x:
                 out.append(str(x["value"]))
-    # unique + keep order
     return list(dict.fromkeys([v for v in out if v and str(v).strip()]))
 
 
@@ -301,7 +300,7 @@ def receive_message(
             "turns": 0,
             "history": [],
             "threatClusterId": None,
-            # ✅ callback state
+            # callback state
             "callbackSent": False,
             "callbackResult": None,
             "callbackSentAt": None
@@ -324,10 +323,8 @@ def receive_message(
     # stable cluster id set once
     existing_cluster_id = SESSION_STORE[session_id].get("threatClusterId")
     computed_cluster_id = compute_threat_cluster_id(final_intel)
-
     if existing_cluster_id is None and computed_cluster_id is not None:
         SESSION_STORE[session_id]["threatClusterId"] = computed_cluster_id
-
     stable_cluster_id = SESSION_STORE[session_id]["threatClusterId"]
 
     # agent
@@ -350,10 +347,6 @@ def receive_message(
 
     # -----------------------------
     # ✅ GUVI CALLBACK (mandatory)
-    # When to send:
-    # - scamDetected True
-    # - AND NOT already sent
-    # - AND (finalize flag OR (has intel and >=2 turns) OR >=6 turns)
     # -----------------------------
     metadata = data.metadata or {}
     finalize_flag = bool(
@@ -397,40 +390,16 @@ def receive_message(
         SESSION_STORE[session_id]["callbackResult"] = callback_status
         SESSION_STORE[session_id]["callbackSentAt"] = int(time.time())
 
-    # If already sent earlier, surface the last result (optional but helpful)
+    # If already sent earlier, surface the last result (optional)
     if callback_status is None and SESSION_STORE[session_id].get("callbackResult"):
         callback_status = SESSION_STORE[session_id]["callbackResult"]
 
+    # ---------------------------------------------------------
+    # ✅ FINAL FIX FOR GUVI TESTER:
+    # Return ONLY the minimal expected response format.
+    # ---------------------------------------------------------
+    reply_text = agent_result.get("agentReply") or "Why is my account being suspended?"
     return {
-        "sessionId": data.sessionId,
-
-        "scamDetection": {
-            "scamDetected": detection["scamDetected"],
-            "confidenceScore": detection["confidenceScore"],
-            "scamStage": detection["scamStage"],
-            "scamType": detection["scamType"]
-        },
-
-        "threatClusterId": stable_cluster_id,
-
-        "agentStatus": {
-            "activated": agent_result.get("activated", agent_result.get("agentMode") != "PASSIVE"),
-            "riskLevel": agent_result["riskLevel"],
-            "action": agent_result["action"],
-            "agentMode": agent_result["agentMode"],
-            "persona": agent_result.get("persona")
-        },
-
-        "agentReply": agent_result.get("agentReply"),
-        "agentGoal": agent_result.get("agentGoal"),
-
-        "engagementMetrics": {
-            "conversationTurns": conversation_turns,
-            "engagementDurationSeconds": duration_sec
-        },
-
-        "extractedIntelligence": final_intel,
-
-        # ✅ Optional: shows whether callback was sent
-        "guviCallback": callback_status
+        "status": "success",
+        "reply": reply_text
     }

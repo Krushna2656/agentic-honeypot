@@ -88,7 +88,6 @@ def generate_reply(
         "The link isn’t loading—send the correct URL once more."
     ]
 
-    # PHISHING stage: link is already present -> ask what page is asking
     phishing_followup = [
         "I opened it. It’s asking for details—what exactly should I fill?",
         "The page looks different. Which option should I click?",
@@ -123,7 +122,6 @@ def generate_reply(
         "Official email ID bhej do, I’ll forward screenshot there."
     ]
 
-    # ✅ CHANGED: phishing + payment followups (when UPI already present)
     phishing_payment_followup = [
         "UPI me receiver name kya dikh raha hai? I want to confirm before paying.",
         "Payment fail ho gaya to kya bank transfer karna hai? Account + IFSC bhej do.",
@@ -143,45 +141,36 @@ def generate_reply(
 
     base = _pick(stage_prompts.get(stage, stage_prompts["UNKNOWN"]))
 
-    # ------------------ SOFT MODE ------------------
     if mode == "SOFT_ENGAGEMENT":
         reply = _pick([base] + soft_openers)
         return {"agentReply": reply, "agentGoal": "Keep scammer engaged and gather more signals without exposure."}
 
-    # ------------------ INTEL MODE ------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # ✅ Rule 1: PHISHING stage link-first, BUT if UPI already present -> shift to payment followup
         if stage == "PHISHING":
             if gaps["need_link"]:
                 return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
 
-            # ✅ CHANGED: if UPI already exists (or payment intent), move to payment flow
             if gaps["has_upi"] or has_payment_intent:
                 return {"agentReply": _pick(phishing_payment_followup), "agentGoal": "Continue extraction by moving phishing into payment flow (receiver/bank details)."}
 
             return {"agentReply": _pick(phishing_followup), "agentGoal": "Keep phishing engagement realistic and gather next-step instructions."}
 
-        # ✅ Rule 2: If verification/urgency without link, ask link
         if gaps["need_link"] and stage in ["SOCIAL_ENGINEERING", "URGENCY"]:
             return {"agentReply": _pick(ask_link), "agentGoal": "Extract phishing URL for reporting."}
 
-        # ✅ Rule 3: Ask UPI only when PAYMENT_REQUEST OR payment intent present
         if gaps["need_upi"] and (has_payment_intent or stage == "PAYMENT_REQUEST"):
             return {"agentReply": _pick(ask_upi), "agentGoal": "Extract UPI ID / receiver handle."}
 
-        # QR flow: already have UPI, extend using collect/receiver-name
         if has_qr_intent and (not gaps["need_upi"]):
             return {"agentReply": _pick(ask_receiver_or_collect), "agentGoal": "Extend conversation using QR/collect flow."}
 
-        # Bank details
         if gaps["need_bank"]:
             return {"agentReply": _pick(ask_bank), "agentGoal": "Extract bank account details."}
 
         if (not gaps["need_bank"]) and gaps["need_ifsc"]:
             return {"agentReply": _pick(ask_ifsc_only), "agentGoal": "Extract IFSC to complete bank intelligence."}
 
-        # Bonus: contact details
         if gaps["need_phone"] or gaps["need_email"]:
             return {"agentReply": _pick(ask_contact_details), "agentGoal": "Extract official contact details for intelligence."}
 
@@ -219,8 +208,11 @@ def agent_decision(
     scam_type = analysis.get("scamType")
     stage = analysis.get("scamStage")
 
-    # once strong evidence exists, keep extraction even at medium score
-    evidence_lock = gaps["has_any_strong"] or bool(extracted_intelligence.get("hasPaymentIntent")) or bool(extracted_intelligence.get("hasQRIntent"))
+    evidence_lock = (
+        gaps["has_any_strong"]
+        or bool(extracted_intelligence.get("hasPaymentIntent"))
+        or bool(extracted_intelligence.get("hasQRIntent"))
+    )
 
     if score >= 0.8:
         reply_pack = generate_reply("INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence)
@@ -235,7 +227,6 @@ def agent_decision(
             "persona": PERSONA["style"]
         }
 
-    # medium score but evidence exists => still extract
     if score >= 0.5 and evidence_lock:
         reply_pack = generate_reply("INTELLIGENCE_EXTRACTION", stage, scam_type, extracted_intelligence)
         return {
