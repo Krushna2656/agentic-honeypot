@@ -106,91 +106,213 @@ def generate_reply(
     has_qr_intent = bool(extracted.get("hasQRIntent", False))
 
     # -----------------------------
-    # Safe benign-help replies
+    # Safe benign-help replies (expanded)
     # -----------------------------
     benign_help = [
         "Aap kaunsa app use karte ho (GPay/PhonePe/Paytm)? Main safe steps bata deta hoon.",
         "UPI PIN reset ke liye app me ‘Forgot UPI PIN’ / ‘Reset PIN’ option hota hai—kaunsa app hai?",
-        "PIN reset karne ke liye debit card details + OTP lagta hai. Aap kaunsa bank/app use kar rahe ho?"
+        "PIN reset ke liye debit card details + OTP lagta hai. Aap kaunsa bank/app use kar rahe ho?",
+        "Aapka issue exactly kya hai—payment fail, PIN issue, ya account warning?",
+        "App me last 2-3 transactions dikh rahe hain kya? (Bas confirm karna hai.)"
     ]
 
     soft_openers = [
         "I’m a bit confused. Can you explain what I need to do?",
         "Okay… what exactly is the issue with my account?",
-        "I don’t understand this. What should I do step by step?"
+        "I don’t understand this. What should I do step by step?",
+        "Wait—ye message kis number/email se aaya hai?",
+        "Aap bol rahe ho verify… but verify kis cheez ka?"
     ]
 
+    # -----------------------------
+    # PHISHING / LINK (expanded)
+    # -----------------------------
     ask_link = [
         "Can you send the official verification link again? The page didn’t open.",
         "Please share the exact link. I want to make sure I’m on the right site.",
-        "The link isn’t loading—send the correct URL once more."
+        "The link isn’t loading—send the correct URL once more.",
+        "Link open ho gaya, but address bar me exact URL kya dikh raha hai? Share karo please.",
+        "Aap jo link bhej rahe ho, wahi official hai na? Ek baar full link paste kar do.",
+        "Mere phone pe link broken aa raha hai—copy-paste karke dubara bhejo."
     ]
 
     phishing_followup = [
         "I opened it. It’s asking for details—what exactly should I fill?",
         "The page looks different. Which option should I click?",
-        "It’s asking for OTP/UPI PIN—are you sure this is required?"
+        "It’s asking for OTP/UPI PIN—are you sure this is required?",
+        "It’s asking for card details too… ye zaroori hai kya?",
+        "It’s asking for netbanking/login—verification me login kyu chahiye?",
+        "I see multiple buttons (Continue/Verify/Proceed). Kaunsa select karu?"
     ]
 
-    # UPI / payment path
+    # When phishing starts blending into payment flow
+    phishing_payment_followup = [
+        "UPI me receiver name kya dikh raha hai? I want to confirm before paying.",
+        "Payment fail ho gaya to kya bank transfer karna hai? Account + IFSC bhej do.",
+        "Amount kitna exactly dalna hai? And receiver name confirm kar do.",
+        "App ‘collect request’ dikha raha hai—kya accept karna hai?",
+        "Verification ke liye minimum kitna amount hai? Exact number bata do."
+    ]
+
+    # -----------------------------
+    # UPI / PAYMENT (expanded)
+    # -----------------------------
     ask_upi = [
         "Which exact UPI ID should I use? Please send it again.",
         "Can you share the UPI handle (like name@bank) so I don’t type wrong?",
-        "What’s the UPI ID and receiver name? I want to confirm before paying."
+        "What’s the UPI ID and receiver name? I want to confirm before paying.",
+        "UPI ID me dot/underscore hai kya? Exact spelling bata do.",
+        "Aapka UPI handle capital/small letters me farak padta hai kya? Exact share kar do.",
+        "UPI ID ke saath receiver name bhi bata do—confirm karna hai."
     ]
 
     ask_receiver_or_collect = [
         "Receiver name kya aayega? (UPI pe jo name show hota hai) I want to confirm.",
         "Can you send a collect request? I’m not able to type the UPI ID correctly.",
-        "If this UPI fails, do you have another UPI ID I can try?"
+        "If this UPI fails, do you have another UPI ID I can try?",
+        "Collect request aayega to amount kitna rahega? Exact confirm kar do.",
+        "Aapka UPI merchant hai ya personal? Name mismatch hua to kya karu?",
+        "Mere app me ‘beneficiary pending’ dikh raha—kya accept karna hai?"
     ]
 
-    # Bank path
+    # -----------------------------
+    # BANK / IFSC (expanded)
+    # -----------------------------
     ask_bank = [
         "If UPI isn’t working, can you share bank details (A/C + IFSC + name)?",
         "Please send the account number and IFSC—my app asks for those.",
-        "Can you share beneficiary bank details so I can complete verification?"
+        "Can you share beneficiary bank details so I can complete verification?",
+        "NEFT/IMPS me beneficiary name mandatory hai—exact name kya hai?",
+        "IMPS me branch details nahi maang rahe, bas A/C + IFSC chahiye—bhej do."
     ]
 
     ask_ifsc_only = [
         "IFSC code bhi bhej do please. App IFSC maang raha hai.",
-        "Receiver bank ka IFSC kya hai? Without IFSC it’s not allowing."
+        "Receiver bank ka IFSC kya hai? Without IFSC it’s not allowing.",
+        "IFSC last 6 characters confirm kar do—galat hua to fail ho jata hai."
     ]
 
     bank_confirm = [
         "Thanks. Beneficiary name exactly kya hai? (bank me jo name show hota hai)",
         "Which bank/branch is this IFSC for? I want to confirm before transfer.",
-        "Account type savings/current kya hai? Wrong type se fail ho jata hai."
+        "Account type savings/current kya hai? Wrong type se fail ho jata hai.",
+        "IMPS/NEFT me ‘beneficiary name mismatch’ aaya to kya karna hai?",
+        "A/C number digits confirm kar do—9/12/16 digits? I want to avoid wrong transfer."
     ]
 
+    # -----------------------------
+    # CONTACT DETAILS (expanded)
+    # -----------------------------
     ask_contact_details = [
         "Aapka support number kya hai? Call karke confirm karna hai.",
-        "Official email ID bhej do, I’ll forward screenshot there."
+        "Official email ID bhej do, I’ll forward screenshot there.",
+        "Aapka helpline number/extension kya hai? Main verify karke proceed karunga.",
+        "Koi ticket/reference number hai? Main note kar leta hoon."
     ]
 
-    # OTP fraud safe prompts (IMPORTANT)
-    otp_followup = [
-        "OTP aaya hai—but ye OTP kis cheez ke liye hai? SMS me kya likha hai?",
+    # -----------------------------
+    # ✅ OTP FRAUD — 12–15 unique replies + turn progression
+    # Keep it OTP-only (no sharing), but gather intel: sender, sms text, purpose, channel, alt verification
+    # -----------------------------
+    otp_sender_bucket = [
+        "Message me sender name kya dikh raha hai? Main confirm karna chahta hoon.",
+        "OTP wale SMS me sender ID kya hai? (SBI/VM-… ) bas bata do.",
+        "OTP message kis number/email se aaya? Exact sender batana.",
+        "SMS me bank ka naam clear likha hai kya? Sender ID kya show ho raha hai?"
+    ]
+
+    otp_sms_text_bucket = [
+        "OTP aaya hai—but SMS me exact line kya likhi hai? Copy karke bhejo.",
+        "SMS me ‘for login’ ya ‘for payment’ aisa kuch likha hai kya? Exact words batao.",
+        "OTP message me amount/merchant mention hai kya? Kya likha hai?",
+        "OTP SMS me time/validity kitni likhi hai? 5 min/10 min?"
+    ]
+
+    otp_purpose_bucket = [
         "OTP share karna safe nahi lag raha. Ye login ka OTP hai ya payment ka?",
-        "Message me sender name kya dikh raha hai? Main confirm karna chahta hoon."
+        "Ye OTP account access ke liye hai ya transaction confirm karne ke liye?",
+        "Agar OTP login ka hua to risk hai—ye kis step pe generate hua hai?",
+        "App me aapne kya action kiya jisse OTP aaya? Link open kiya ya payment click?"
     ]
 
-    phishing_payment_followup = [
-        "UPI me receiver name kya dikh raha hai? I want to confirm before paying.",
-        "Payment fail ho gaya to kya bank transfer karna hai? Account + IFSC bhej do.",
-        "Amount kitna exactly dalna hai? And receiver name confirm kar do."
+    otp_safe_alt_bucket = [
+        "Main OTP nahi share kar sakta—kya aap alternative verification (reference number) de sakte ho?",
+        "OTP share nahi karunga—koi customer care number do, main call karke confirm kar leta hoon.",
+        "Agar legit hai, to bank app me bhi alert aata hai—kya process ka reference ID hai?",
+        "OTP ke bina koi verification step hai? Like registered email confirm ya ticket number?"
     ]
 
+    otp_followup_fallback = [
+        "Ek baar confirm: OTP kis service/app ke liye generate hua? (SBI YONO / netbanking / UPI?)",
+        "OTP ke SMS me last 4 digits ya masked info aata hai kya? (Bas confirm karna.)",
+        "OTP me kisi merchant ka naam dikh raha? Agar haan to kaunsa?"
+    ]
+
+    # Pick OTP reply bucket by turn (progression)
+    def _otp_progressive_reply(ti: int) -> str:
+        if ti <= 1:
+            return _pick(otp_sender_bucket, rng)
+        if ti == 2:
+            return _pick(otp_sms_text_bucket, rng)
+        if ti == 3:
+            return _pick(otp_purpose_bucket, rng)
+        if ti >= 4:
+            # rotate between purpose and safe alternatives to keep convo alive
+            buckets = otp_safe_alt_bucket + otp_purpose_bucket + otp_followup_fallback
+            return _pick(buckets, rng)
+        return _pick(otp_followup_fallback, rng)
+
+    # -----------------------------
+    # Stage prompts (expanded)
+    # -----------------------------
     stage_prompts = {
-        "RECON": ["Hi, yes—what is this about?", "Hello. Which service are you calling from?"],
-        "SOCIAL_ENGINEERING": ["I’m worried now. What verification is needed?", "Why is my account suspended? I didn’t do anything."],
-        "URGENCY": ["Okay okay, I don’t want it blocked. What do I do now?", "Please guide quickly. I’m not technical."],
-        "PAYMENT_REQUEST": ["You’re asking payment… I need exact details so I don’t make a mistake.", "I can do it, but tell me the exact ID/link."],
-        "PHISHING": ["I clicked but it looks different.", "The site is asking too many things."],
-        "OTP_FRAUD": ["OTP? But why OTP is needed for this?", "I got OTP, but I’m scared to share. What is it for?"],
-        "REWARD_LURE": ["Really? What do I need to do to claim it?", "Okay… what’s the process for the reward?"],
-        "BENIGN": ["Haan bolo—kya help chahiye?", "Okay, I can help. What exactly is the issue?"],
-        "UNKNOWN": ["Can you clarify what you need from me?", "What is this regarding? Please explain."]
+        "RECON": [
+            "Hi, yes—what is this about?",
+            "Hello. Which service are you calling from?",
+            "Haan bolo—kis kaam ke liye message kiya?"
+        ],
+        "SOCIAL_ENGINEERING": [
+            "I’m worried now. What verification is needed?",
+            "Why is my account suspended? I didn’t do anything.",
+            "KYC pending ka matlab kya? Main kaunsa step miss kar gaya?",
+            "Ye alert bank app me bhi dikh raha hai kya? Aap kya verify karwana chahte ho?"
+        ],
+        "URGENCY": [
+            "Okay okay, I don’t want it blocked. What do I do now?",
+            "Please guide quickly. I’m not technical.",
+            "Thoda slow—main galti nahi karna chahta. Step-by-step bolo."
+        ],
+        "PAYMENT_REQUEST": [
+            "You’re asking payment… I need exact details so I don’t make a mistake.",
+            "I can do it, but tell me the exact ID/link.",
+            "Payment karne se pehle receiver name confirm karna hai—kya dikhna chahiye?",
+            "Amount exact kitna hai? Ek rupee bhi galat hua to fail ho jata."
+        ],
+        "PHISHING": [
+            "I clicked but it looks different.",
+            "The site is asking too many things.",
+            "Page pe padlock/https nahi dikh raha—ye normal hai?"
+        ],
+        "OTP_FRAUD": [
+            "OTP? But why OTP is needed for this?",
+            "I got OTP, but I’m scared to share. What is it for?",
+            "OTP share karna risky lag raha—pehle confirm karna hai."
+        ],
+        "REWARD_LURE": [
+            "Really? What do I need to do to claim it?",
+            "Okay… what’s the process for the reward?",
+            "Kis cheez ka reward hai? And eligibility kya hai?"
+        ],
+        "BENIGN": [
+            "Haan bolo—kya help chahiye?",
+            "Okay, I can help. What exactly is the issue?",
+            "Theek hai—problem batao, main check karta hoon."
+        ],
+        "UNKNOWN": [
+            "Can you clarify what you need from me?",
+            "What is this regarding? Please explain.",
+            "Samjha nahi—thoda clearly batao kya chahiye?"
+        ]
     }
 
     base = _pick(stage_prompts.get(stage, stage_prompts["UNKNOWN"]), rng)
@@ -208,9 +330,12 @@ def generate_reply(
     # -----------------------------
     if mode == "INTELLIGENCE_EXTRACTION":
 
-        # ✅ HARD LOCK: OTP stage must ask OTP-related questions only
+        # ✅ HARD LOCK: OTP stage must ask OTP-related questions only (progressive + 12–15+ variations)
         if stage == "OTP_FRAUD":
-            return {"agentReply": _pick(otp_followup, rng), "agentGoal": "Keep OTP fraud engagement realistic without sharing OTP; gather context (SMS/sender/purpose)."}
+            return {
+                "agentReply": _otp_progressive_reply(turn_index),
+                "agentGoal": "Keep OTP fraud engagement realistic without sharing OTP; gather sender/SMS text/purpose and alternative verification."
+            }
 
         # ✅ HARD LOCK: if bank/IFSC already present, do NOT downgrade to UPI-only
         if gaps["has_bank"] or gaps["has_ifsc"]:
@@ -235,8 +360,7 @@ def generate_reply(
 
         # ✅ UPI / payment
         if gaps["has_upi"]:
-            # Ask receiver name / collect flow
-            return {"agentReply": _pick(ask_receiver_or_collect, rng), "agentGoal": "Confirm receiver name or use collect/alternate UPI to extend extraction."}
+            return {"agentReply": _pick(ask_receiver_or_collect, rng), "agentGoal": "Confirm receiver name / collect / alternate UPI to extend extraction."}
 
         # If payment request but no UPI yet, ask UPI
         if gaps["need_upi"] and (has_payment_intent or stage == "PAYMENT_REQUEST"):
@@ -252,12 +376,13 @@ def generate_reply(
 
         # Contact details at the end
         if gaps["need_phone"] or gaps["need_email"]:
-            return {"agentReply": _pick(ask_contact_details, rng), "agentGoal": "Extract official contact details for intelligence."}
+            return {"agentReply": _pick(ask_contact_details, rng), "agentGoal": "Extract contact details for intelligence."}
 
         followups = [
             "Okay, I noted that. What’s the next step?",
             "Done. If it fails again, what should I do?",
-            "Can you confirm receiver name once more?"
+            "Can you confirm receiver name once more?",
+            "Agar ye step ho gaya, next verification kya hoga?"
         ]
         return {"agentReply": _pick(followups, rng), "agentGoal": "Keep conversation alive for more evidence."}
 
@@ -278,21 +403,13 @@ def agent_decision(
     turn_index = max(1, len(conversation_history) + 1)
 
     if not analysis.get("scamDetected", False):
-        # ✅ IMPORTANT: return a benign reply so wrapper doesn't default to scammy prompt
-        reply_pack = generate_reply(
-            mode="INTELLIGENCE_EXTRACTION",
-            stage="BENIGN",
-            scam_type="BENIGN",
-            extracted=extracted_intelligence,
-            session_id=session_id,
-            turn_index=turn_index
-        )
-        # override with benign help set
         benign_rng = _make_rng(session_id, "BENIGN_HELP", "BENIGN", turn_index)
         benign_help = [
             "Aap kaunsa app use karte ho (GPay/PhonePe/Paytm)? Main safe steps bata deta hoon.",
             "UPI PIN reset ke liye app me ‘Forgot UPI PIN’ / ‘Reset PIN’ option hota hai—kaunsa app hai?",
-            "PIN reset karne ke liye debit card details + OTP lagta hai. Aap kaunsa bank/app use kar rahe ho?"
+            "PIN reset ke liye debit card details + OTP lagta hai. Aap kaunsa bank/app use kar rahe ho?",
+            "Aapka issue exactly kya hai—payment fail, PIN issue, ya account warning?",
+            "App me error code aa raha hai kya? (Bas code bata do.)"
         ]
         return {
             "activated": False,
