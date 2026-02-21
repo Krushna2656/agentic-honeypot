@@ -194,8 +194,7 @@ POST https://hackathon.guvi.in/api/updateHoneyPotFinalResult
 ## 👨‍💻 Author
 
 **Krushna Jadhav**
-Agentic Honeypot – GUVI Hackathon Submission
+Agentic Honeypot 
 
 ---
 
-✅ Submission-ready | 🚀 International hackathon grade | 🏆
